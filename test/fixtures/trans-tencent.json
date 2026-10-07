@@ -1,0 +1,35 @@
+{
+  "vendor": "tencent",
+  "endpoint": "https://tmt.tencentcloudapi.com/",
+  "synthesized": false,
+  "capturedAt": 1791284059087,
+  "note": "第十轮（2026-10-06）无凭据 GET 实测 + 官网示例合成。provenance=live 的那条是字节级真回包（tmp/round10-sources.md §1），provenance=synthetic 的几条本机没有凭据发不出去、形状照官网响应示例拼 —— 用例不许把合成那几条当实测读数。★ 两家云是**先查标识符、后验签名**，所以这一发证明不了签名字节正确（spec §9.4 未验证清单第一条）。",
+  "responses": [
+    {
+      "id": "err_no_credential",
+      "provenance": "live",
+      "capturedAt": 1791284059087,
+      "via": "direct",
+      "status": 200,
+      "ms": 331,
+      "contentType": "application/json",
+      "probeUrl": "https://tmt.tencentcloudapi.com/?Action=TextTranslate&Version=2018-03-21&Region=ap-guangzhou&Timestamp=1791284058&Nonce=123456&SecretId=gh-trending-probe-no-credential&ProjectId=0&Source=en&Target=zh&SourceText=An+open-source+toolkit+for+agent+memory+with+1342+stars+and+MIT+license&Signature=Gcy8rPWjQ1HNiaKHKrkCWGcd8o8%3D",
+      "body": "{\"Response\":{\"Error\":{\"Code\":\"AuthFailure.SecretIdNotFound\",\"Message\":\"The SecretId is not found, please ensure that your SecretId is correct.\"},\"RequestId\":\"4f68c5ef-3f20-4e63-b846-f76589b1033e\"}}",
+      "note": "★ 实测：假标识符 + 假签名发出去，对方**点名**回了这一句（200 也照回 ⇒ 判成功只能看译文在不在）。"
+    },
+    {
+      "provenance": "synthetic",
+      "id": "ok",
+      "status": 200,
+      "contentType": "application/json",
+      "note": "官方文档：译文在 Response.TargetText（这一路只有整段，不分段）。成功样本本机没有凭据发不出去 ⇒ 合成。",
+      "body": {
+        "Response": {
+          "TargetText": "一个拥有 1342 颗星与 MIT 许可证的代理内存开源工具包",
+          "SourceText": "An open-source toolkit for agent memory with 1342 stars and MIT license",
+          "RequestId": "synthetic-not-captured"
+        }
+      }
+    }
+  ]
+}

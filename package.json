@@ -1,0 +1,23 @@
+{
+  "name": "dsh-plugin-gh-trending",
+  "version": "0.1.0",
+  "type": "module",
+  "description": "DSH GitHub 热榜监控插件：日榜 / 周榜 / 月榜 + 跨榜同现 + 变化流水。全程只读 GET，不推外部通知。",
+  "main": "index.js",
+  "exports": {
+    ".": "./index.js",
+    "./client": { "default": "./client.js" },
+    "./package.json": "./package.json"
+  },
+  "files": ["index.js", "lib", "client.js", "cordis.yml", "prototype", "README.md", "LICENSE"],
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/gh-gongjin/dsh-plugin-gh-trending.git"
+  },
+  "keywords": ["dsh", "dsh-plugin", "github", "trending", "monitor"],
+  "license": "MIT",
+  "dsh": {
+    "bundle": { "patch": "cordis.yml" },
+    "client": { "platform": "web", "immediately": true }
+  }
+}

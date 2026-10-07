@@ -1,0 +1,70 @@
+{
+  "vendor": "baidu",
+  "endpoint": "https://fanyi-api.baidu.com/api/trans/vip/translate",
+  "synthesized": false,
+  "capturedAt": 1791284058689,
+  "note": "第十轮（2026-10-06）无凭据 GET 实测 + 官网示例合成。provenance=live 的那条是字节级真回包（tmp/round10-sources.md §1），provenance=synthetic 的几条本机没有凭据发不出去、形状照官网响应示例拼 —— 用例不许把合成那几条当实测读数。★ 两家云是**先查标识符、后验签名**，所以这一发证明不了签名字节正确（spec §9.4 未验证清单第一条）。",
+  "responses": [
+    {
+      "id": "err_no_credential",
+      "provenance": "live",
+      "capturedAt": 1791284058689,
+      "via": "direct",
+      "status": 200,
+      "ms": 397,
+      "contentType": "application/json",
+      "probeUrl": "https://fanyi-api.baidu.com/api/trans/vip/translate?q=An+open-source+toolkit+for+agent+memory+with+1342+stars+and+MIT+license&from=auto&to=zh&appid=gh-trending-probe-no-credential&salt=1791284058689&sign=00000000000000000000000000000000",
+      "body": "{\"error_code\":\"52003\",\"error_msg\":\"UNAUTHORIZED USER\"}",
+      "note": "★ 实测：假标识符 + 假签名发出去，对方**点名**回了这一句（200 也照回 ⇒ 判成功只能看译文在不在）。"
+    },
+    {
+      "provenance": "synthetic",
+      "id": "ok",
+      "status": 200,
+      "contentType": "application/json;charset=utf-8",
+      "note": "官网「通用文本翻译」响应示例形状：译文在 trans_result[].dst（按段顺序拼）。",
+      "body": {
+        "from": "en",
+        "to": "zh",
+        "trans_result": [
+          {
+            "src": "An open-source toolkit for agent memory with 1342 stars and MIT license",
+            "dst": "一个拥有 1342 颗星与 MIT 许可证的代理内存开源工具包"
+          }
+        ]
+      }
+    },
+    {
+      "provenance": "synthetic",
+      "id": "ok_multi_seg",
+      "status": 200,
+      "contentType": "application/json;charset=utf-8",
+      "note": "多段：两行 src/dst，按顺序拼成一句中文（拼错顺序就是把两句话接岔了）。",
+      "body": {
+        "from": "en",
+        "to": "zh",
+        "trans_result": [
+          {
+            "src": "Build stunning websites effortlessly with AI.",
+            "dst": "用 AI 轻松打造出色网站。"
+          },
+          {
+            "src": "No code required, deploy in seconds.",
+            "dst": "无需编写代码，几秒即可部署。"
+          }
+        ]
+      }
+    },
+    {
+      "provenance": "synthetic",
+      "id": "err_54003",
+      "status": 200,
+      "contentType": "application/json;charset=utf-8",
+      "note": "官网错误码表里 54003 = AppID 无效。**形状**与下面那条 live 的一致（error_code + error_msg），只是这条不是实测。",
+      "body": {
+        "error_code": "54003",
+        "error_msg": "请检查接口中启用图片功能"
+      }
+    }
+  ]
+}

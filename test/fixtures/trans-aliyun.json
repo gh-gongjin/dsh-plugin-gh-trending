@@ -1,0 +1,51 @@
+{
+  "vendor": "aliyun",
+  "endpoint": "https://mt.aliyuncs.com/",
+  "synthesized": false,
+  "capturedAt": 1791284059419,
+  "note": "第十轮（2026-10-06）无凭据 GET 实测 + 官网示例合成。provenance=live 的那条是字节级真回包（tmp/round10-sources.md §1），provenance=synthetic 的几条本机没有凭据发不出去、形状照官网响应示例拼 —— 用例不许把合成那几条当实测读数。★ 两家云是**先查标识符、后验签名**，所以这一发证明不了签名字节正确（spec §9.4 未验证清单第一条）。",
+  "responses": [
+    {
+      "id": "err_no_credential",
+      "provenance": "live",
+      "capturedAt": 1791284059419,
+      "via": "direct",
+      "status": 404,
+      "ms": 294,
+      "contentType": "application/json;charset=utf-8",
+      "probeUrl": "https://mt.aliyuncs.com/?AccessKeyId=gh-trending-probe-no-credential&Action=TranslateGeneral&Format=JSON&FormatType=text&Scene=general&SignatureMethod=HMAC-SHA1&SignatureNonce=1791284058689probe&SignatureVersion=1.0&SourceLanguage=en&SourceText=An%20open-source%20toolkit%20for%20agent%20memory%20with%201342%20stars%20and%20MIT%20license&TargetLanguage=zh&Timestamp=2026-10-06T10%3A54%3A18Z&Version=2018-10-12&Signature=0bYd8M055OOIfi%2FKaAQeNjL2pmw%3D",
+      "body": "{\"RequestId\":\"01A110D9-9E5F-5082-B755-1CF7B78E7B4A\",\"Message\":\"Specified access key is not found.\",\"Recommend\":\"https://api.aliyun.com/troubleshoot?q=InvalidAccessKeyId.NotFound&product=alimt&requestId=01A110D9-9E5F-5082-B755-1CF7B78E7B4A\",\"HostId\":\"mt.aliyuncs.com\",\"Code\":\"InvalidAccessKeyId.NotFound\"}",
+      "note": "★ 实测：假标识符 + 假签名发出去，对方**点名**回了这一句（200 也照回 ⇒ 判成功只能看译文在不在）。"
+    },
+    {
+      "provenance": "synthetic",
+      "id": "ok",
+      "status": 200,
+      "contentType": "application/json",
+      "note": "官网《通用版调用指南》响应示例形状（去掉文档里那层外壳）：译文在 Data.Translated，Code 是数字 200。",
+      "body": {
+        "RequestId": "synthetic-not-captured",
+        "Data": {
+          "Translated": "一个拥有 1342 颗星与 MIT 许可证的代理内存开源工具包"
+        },
+        "Code": 200
+      }
+    },
+    {
+      "provenance": "synthetic",
+      "id": "ok_wrapped",
+      "status": 200,
+      "contentType": "application/json",
+      "note": "官网文档里那条示例是**带外壳**的（TranslateGeneralResponse 包一层）：解析两种都得认，否则换个文档形状就读不出。",
+      "body": {
+        "TranslateGeneralResponse": {
+          "RequestId": "synthetic-not-captured",
+          "Data": {
+            "Translated": "一个拥有 1342 颗星与 MIT 许可证的代理内存开源工具包"
+          },
+          "Code": 200
+        }
+      }
+    }
+  ]
+}

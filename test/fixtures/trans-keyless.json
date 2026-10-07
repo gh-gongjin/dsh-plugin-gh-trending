@@ -1,0 +1,189 @@
+{
+  "capturedAt": 1791262399814,
+  "capturedAtISO": "2026-10-06T04:53:19.814Z",
+  "endpoint": "https://translate.googleapis.com/translate_a/single",
+  "route": {
+    "via": "proxy",
+    "source": "registry",
+    "proxy": "http://127.0.0.1:7897",
+    "reason": "",
+    "targetHost": "translate.googleapis.com",
+    "at": 1791262398908
+  },
+  "note": "真回包，逐字节来自 translate.googleapis.com（经本机系统代理）。吃凭据那三家（百度/腾讯/阿里）没有账号就无法真发成功那一发，它们的夹具是 trans-baidu.json / trans-tencent.json / trans-aliyun.json 三份，逐条带 provenance（live=无凭据真回包，synthetic=按官网响应格式合成）。",
+  "responses": [
+    {
+      "q": "An open-source toolkit for agent memory with 1342 stars and MIT license",
+      "path": "?client=gtx&sl=auto&tl=zh-CN&dt=t&q=An+open-source+toolkit+for+agent+memory+with+1342+stars+and+MIT+license",
+      "url": "https://translate.googleapis.com/translate_a/single?client=gtx&sl=auto&tl=zh-CN&dt=t&q=An+open-source+toolkit+for+agent+memory+with+1342+stars+and+MIT+license",
+      "status": 200,
+      "ms": 342,
+      "contentType": "application/json; charset=utf-8",
+      "body": [
+        [
+          [
+            "具有 1342 颗星和 MIT 许可证的代理内存开源工具包",
+            "An open-source toolkit for agent memory with 1342 stars and MIT license",
+            null,
+            null,
+            3,
+            null,
+            null,
+            [
+              []
+            ],
+            [
+              [
+                [
+                  "6ffafab0da7e640be86ac09d0d5e539c",
+                  "en_zh_2023q1.md"
+                ]
+              ]
+            ]
+          ]
+        ],
+        null,
+        "en",
+        null,
+        null,
+        null,
+        1,
+        [],
+        [
+          [
+            "en"
+          ],
+          null,
+          [
+            1
+          ],
+          [
+            "en"
+          ]
+        ]
+      ]
+    },
+    {
+      "q": "A C++ repository with MIT license",
+      "path": "?client=gtx&sl=auto&tl=zh-CN&dt=t&q=A+C%2B%2B+repository+with+MIT+license",
+      "url": "https://translate.googleapis.com/translate_a/single?client=gtx&sl=auto&tl=zh-CN&dt=t&q=A+C%2B%2B+repository+with+MIT+license",
+      "status": 200,
+      "ms": 244,
+      "contentType": "application/json; charset=utf-8",
+      "body": [
+        [
+          [
+            "具有 MIT 许可证的 C++ 存储库",
+            "A C++ repository with MIT license",
+            null,
+            null,
+            3,
+            null,
+            null,
+            [
+              []
+            ],
+            [
+              [
+                [
+                  "6ffafab0da7e640be86ac09d0d5e539c",
+                  "en_zh_2023q1.md"
+                ]
+              ]
+            ]
+          ]
+        ],
+        null,
+        "en",
+        null,
+        null,
+        null,
+        0.98710054,
+        [],
+        [
+          [
+            "en"
+          ],
+          null,
+          [
+            0.98710054
+          ],
+          [
+            "en"
+          ]
+        ]
+      ]
+    },
+    {
+      "q": "Build stunning websites effortlessly with AI. No code required, deploy in seconds.",
+      "path": "?client=gtx&sl=auto&tl=zh-CN&dt=t&q=Build+stunning+websites+effortlessly+with+AI.+No+code+required%2C+deploy+in+seconds.",
+      "url": "https://translate.googleapis.com/translate_a/single?client=gtx&sl=auto&tl=zh-CN&dt=t&q=Build+stunning+websites+effortlessly+with+AI.+No+code+required%2C+deploy+in+seconds.",
+      "status": 200,
+      "ms": 906,
+      "contentType": "application/json; charset=utf-8",
+      "body": [
+        [
+          [
+            "利用人工智能轻松构建令人惊叹的网站。",
+            "Build stunning websites effortlessly with AI. ",
+            null,
+            null,
+            3,
+            null,
+            null,
+            [
+              []
+            ],
+            [
+              [
+                [
+                  "6ffafab0da7e640be86ac09d0d5e539c",
+                  "en_zh_2023q1.md"
+                ]
+              ]
+            ]
+          ],
+          [
+            "无需代码，几秒钟内即可部署。",
+            "No code required, deploy in seconds.",
+            null,
+            null,
+            3,
+            null,
+            null,
+            [
+              []
+            ],
+            [
+              [
+                [
+                  "6ffafab0da7e640be86ac09d0d5e539c",
+                  "en_zh_2023q1.md"
+                ]
+              ]
+            ]
+          ]
+        ],
+        null,
+        "en",
+        null,
+        null,
+        null,
+        1,
+        [],
+        [
+          [
+            "en"
+          ],
+          null,
+          [
+            1
+          ],
+          [
+            "en"
+          ]
+        ]
+      ]
+    }
+  ]
+}

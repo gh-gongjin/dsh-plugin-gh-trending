@@ -1,0 +1,6 @@
+# 本机走查痕迹：浏览器 profile + 库存备份（里面有用户填过的真实云凭据）+ 截图，一律不进仓库
+tmp/
+
+node_modules/
+.DS_Store
+Thumbs.db
