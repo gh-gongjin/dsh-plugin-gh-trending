@@ -244,6 +244,11 @@ export function apply(ctx, config = {}) {
     stateStore,
     eventStore,
     prefsStore,
+    // ★ 第二十二轮（榜面补译）要的两格：整张译文表（读路径的 hits 装配）与**同步**偏好视图（选路 + 开关判定）。
+    //   偏好走 `getPrefs` 而不是 `prefsStore.read()`：与两路现译服务自己读的正是同一份 `prefsView`，
+    //   选路与开关判定分两处取就会漂（库里已改、视图还没 reload 的那几百毫秒里，界面上会出现"选了百度却按免费档判"）。
+    transStore,
+    getPrefs,
     repoService,
     translator,
     webTranslator,

@@ -481,13 +481,15 @@ window.__ModuleLoader__.load({
       const rows = b.rows || [];
       const addedLabel = (cfg().boardAddedLabels || {})[board] || '新增';
       const stale = !b.ok && rows.length > 0;
-      // 内置离线预译：命中表由宿主算好（snap.descZh.hits），这一半边只做「有没有这一行」的取值，不自己判原文。
-      const zh = snap?.descZh || { label: '', note: '', hits: {} };
-      const zhRows = rows.filter((r) => zh.hits?.[r.repo]);
+      // 描述列的中文：宿主把两种来源（内置预译 / 每轮检查后补的现译）算好并排给到，
+      // 这一半边只取值 —— 不判原文、不数条数、不拼句子（客户端不编日期，也不替额度做决定）。
+      const zh = snap?.descZh || { hits: {}, heads: {}, liveNote: '' };
+      const head = (zh.heads || {})[board] || '';
+      const hitOf = (repo) => zh.hits?.[repo] || null;
       return h('section', { className: 'gt-card' },
         h('div', { className: 'gt-card-h' },
           h('span', { className: 'gt-card-t' }, boardLabel(board)),
-          h('span', { className: 'gt-sub gt-num', title: zh.note }, `榜面数据 ${fmtAge(b.at, snap?.at)} · ${b.ok ? '最近取回' : '最近尝试'} ${fmtAge(b.lastFetchAt, snap?.at)}${zhRows.length ? ` · 描述中译为${zh.label}` : ''}`),
+          h('span', { className: 'gt-sub gt-num' }, `榜面数据 ${fmtAge(b.at, snap?.at)} · ${b.ok ? '最近取回' : '最近尝试'} ${fmtAge(b.lastFetchAt, snap?.at)}${head ? ` · ${head}` : ''}`),
           h('span', { className: 'gt-card-n gt-num' }, `${rows.length} / ${b.rowsTotal} 条`)),
         h('div', { className: 'gt-card-b' },
           stale
@@ -495,6 +497,8 @@ window.__ModuleLoader__.load({
           !stale && rows.length === 0
             ? h('p', { className: 'gt-empty' }, b.ok ? '这一档今天没有上榜仓库' : `${boardLabel(board)}：${b.error || '还没有数据'}`)
             : null,
+          // 现译这一路此刻发不出去时，宿主给一句实话；没欠着的行就给空串，界面上什么都不出现
+          rows.length && zh.liveNote ? h('div', { className: 'gt-notice' }, zh.liveNote) : null,
           rows.length
             ? h('div', { className: 'gt-scroll' }, h('table', { className: 'gt-tbl' },
                 h('colgroup', null,
@@ -517,7 +521,7 @@ window.__ModuleLoader__.load({
                   h('th', { className: 'gt-tail' }, ''))),
                 h('tbody', null, rows.map((r) => {
                   const dd = deltaCell(r.delta);
-                  const t = zh.hits?.[r.repo] || '';
+                  const hit = hitOf(r.repo);
                   return h('tr', { key: r.repo, className: r.fresh ? 'gt-new' : '' },
                     h('td', { className: 'gt-r' }, h(RankBadge, { rank: r.rank })),
                     h('td', null,
@@ -526,9 +530,9 @@ window.__ModuleLoader__.load({
                       r.fresh ? h('span', { className: 'gt-tag' }, '新面孔') : null),
                     h('td', null, h('span', {
                       className: 'gt-desc',
-                      // 悬停必须看得到原文：译文是预译的，读的人有权核对它翻的是哪一句
-                      title: t ? `原文：${r.desc}\n${zh.note}` : (r.desc || ''),
-                    }, t || r.desc || '—')),
+                      // 悬停必须看得到原文与**这一行自己的**来源：两种中文说的不是一件事，拿卡头那一句套每一行就串了
+                      title: hit ? `原文：${r.desc}\n${hit.label}\n${hit.note}` : (r.desc || ''),
+                    }, hit?.zh || r.desc || '—')),
                     h('td', null, r.lang
                       ? h('span', { className: 'gt-lang' }, h('i', { style: r.langColor ? { background: r.langColor } : null }), h('span', null, r.lang))
                       : h('span', { className: 'gt-flat' }, '—')),

@@ -29,9 +29,15 @@ import {
   REPO_CACHE_HOURS, REPO_CACHE_HOUR_LABELS, REPO_SECTION_LABELS,
   README_ZH_GATE_SUFFIXES,
   TRANSLATE_COMMON_NOTE, LLM_SWITCH_LABELS, LLM_README_LABEL_TRANSLATE, LLM_KINDS, LLM_NOT_READY_HINT, llmZhLabel,
+  // 第二十二轮：榜面那一列的两种来源，落款与那句"发不出去"的实话都在 domain，用例只认名字不抄文本。
+  engineZhLabel, DESC_ZH_LIVE_NOTE, DESC_ZH_BLOCKED_NOTE,
 } from '../lib/domain.js';
 import { netView, translatorView, githubView, publicPrefs } from '../lib/api.js';
 import { DESC_ZH_ROWS, DESC_ZH_LABEL, DESC_ZH_NOTE } from '../lib/desc-zh.js';
+// ★ 第二十二轮：`descZh` 那一格改由宿主自己的装配函数现造（同 netView / translatorView 那条律）。
+//   上一版在这里手搓 `{label, note, hits}` ⇒ 宿主换成 `{hits, heads, liveNote}` 之后客户端 57 条照样绿，
+//   而真机的榜面那一列会整列空掉。夹具跟着源走，形状漂移才会当场红。
+import { descZhView, allVisibleRows, boardDescZhHead } from '../lib/board-zh.js';
 import { repoView, applyZh } from '../lib/services/repo.js';
 
 /** 载荷 = index.js 里 webserver/index-inject 推的那一份，逐键对齐。 */
@@ -138,10 +144,21 @@ function snapFixture(over = {}) {
     rowsTotal: 20, rows, empty: rows.length === 0, ...bo,
   });
   const boards = {
-    daily: b('daily', [row('a/one', 1), row('a/two', 2, { delta: 4 }), row('a/three', 3, { delta: -2 })]),
-    weekly: b('weekly', [row('w/one', 1)]),
+    // 第一行刻意用内置表里真那一条（主键 + 原文都取自 `DESC_ZH_ROWS`）：宿主视图判命中靠两者逐字相同，
+    // 夹具只改原文不改主键的话，这一列在客户端测试里就永远不会命中 —— 假绿的另一种写法。
+    daily: b('daily', [row(DESC_ZH_ROWS[0][0], 1, { desc: DESC_ZH_ROWS[0][1] }), row('a/two', 2, { delta: 4 }), row('a/three', 3, { delta: -2 })]),
+    weekly: b('weekly', [row('w/one', 1, { desc: 'A plain english line' })]),
     monthly: b('monthly', [], { rowsTotal: 0 }),
   };
+  // ★ 描述列的中文（第二十二轮起两种来源并排）：hits / heads 全部由宿主的 `descZhView` + `boardDescZhHead` 现算，
+  //   喂进去的 transRows 就是 KV 里那一行的形状 —— 用例不手搓落款，也就不会自己编日期。
+  //   a/one 的 desc 取内置表里真那一句原文 ⇒ 走 builtin；w/one 走库里逐字命中的现译行 ⇒ 走 live。
+  const transRows = [
+    { repo: 'w/one', kind: 'desc', src: 'A plain english line', zh: '这一句是现译的中文', at: atOff(-120000), chars: 8, engine: 'keyless' },
+  ];
+  const zhView = descZhView(allVisibleRows(boards), transRows, { nowMs: AT });
+  const heads = {};
+  for (const k of BOARDS) heads[k] = boardDescZhHead(boards[k].rows, zhView.hits);
   // ★ net 这一份视图是宿主 netView 现造的（它 export 出来就是给这里用）：
   //   用例手搓形状就等于客户端在测自己编的字段，真机少一个键照样全绿。
   const net = netView({
@@ -168,9 +185,7 @@ function snapFixture(over = {}) {
     storage: { available: true },
     sourceNote: TRENDING_SOURCE_NOTE,
     langCheck: LANG_CHECK,
-    // 内置离线预译（宿主 lib/desc-zh.js 算好的命中表）。键必须对得上上面 boards 里的 repo，
-    // 值取真表里的一条译文 —— 界面上截到的字与发货数据同源，不是用例自己编的。
-    descZh: { label: DESC_ZH_LABEL, note: DESC_ZH_NOTE, hits: { 'a/one': DESC_ZH_ROWS[0][2] } },
+    descZh: { hits: zhView.hits, heads, liveNote: '' },
     // ★ 现译这一路的视图同样是宿主 translatorView 现造的（同 netView 那条律）：手搓就等于客户端在测自己编的键。
     //   档选 host_llm：这一路是 ready 的，免费/官方那一路在客户端测试里没有句柄，选它就得造假。
     translator: translatorView({ translator: { ready: () => true, kinds: () => [...LLM_KINDS] } }, { translateEngine: 'host_llm', llmDesc: false, llmReadme: true }),
@@ -557,26 +572,63 @@ check('client-47 描述列：命中预译的行显示译文、悬停看得见原
   const descCell = (i) => kidsOf(trs[i], 'td')[2];
   const span = (i) => descCell(i).children[0];
   assert.equal(text(descCell(0)), zh, 'a/one 在命中表里 ⇒ 描述列该显示译文');
-  assert.match(span(0).props.title, /原文：一个描述/, '悬停必须看得见原文：译文是预译的，读的人有权核对翻的是哪一句');
+  assert.equal(span(0).props.title.includes(`原文：${DESC_ZH_ROWS[0][1]}`), true,
+    '悬停必须看得见原文：译文是预译的，读的人有权核对翻的是哪一句');
   assert.equal(span(0).props.title.includes(DESC_ZH_NOTE), true, '悬停里那句来源 + 时间戳该是宿主给的原话');
+  assert.equal(span(0).props.title.includes(DESC_ZH_LABEL), true, '落款跟着**这一行自己的**来源走');
   assert.equal(text(descCell(1)), '一个描述', '没命中的行被译文串台 = 指鹿为马');
   assert.equal(text(descCell(2)), '一个描述');
   assert.equal(span(1).props.title, '一个描述', '没译文时悬停就是原文，别挂半句解释');
+
+  // 第二十二轮：同一列并排两种来源，现译那一行说的是另一套话（不许拿内置那句落款盖它）
+  const w = render(BoardCard, { snap: snapFixture(), board: 'weekly' });
+  const wTr = kidsOf(kidsOf(findAllType(w, 'table')[0], 'tbody')[0], 'tr')[0];
+  const wSpan = kidsOf(wTr, 'td')[2].children[0];
+  assert.equal(text(kidsOf(wTr, 'td')[2]), '这一句是现译的中文', '库里逐字命中的现译行照样上屏（这一轮的改判点）');
+  assert.equal(wSpan.props.title.includes(`原文：A plain english line`), true);
+  assert.equal(wSpan.props.title.includes(DESC_ZH_LIVE_NOTE), true, '现译那一行悬停给的是现译那句说明，不是内置表的注');
+  assert.equal(wSpan.props.title.includes(DESC_ZH_NOTE), false, '两种来源的说明句不许同时出现在一行上');
+  assert.equal(wSpan.props.title.includes(engineZhLabel('keyless', atOff(-120000))), true,
+    '落款的档名与时刻读的是库里那一行（客户端不自己起名、不自己编日期）');
 });
 
-check('client-48 「中文是预译」只在真有命中的卡上出现，文案逐字读载荷（客户端不许自己编日期）', () => {
+check('client-48 卡头那句中文来源只在真有命中的卡上出现，整句逐字读载荷（客户端不许自己数条数、编日期）', () => {
   const { BoardCard } = loadClient().exports.__test.components;
   const headSub = (board, snap) => kidsOf(findByClass(render(BoardCard, { snap, board }), 'gt-card-h')[0], 'span')[1];
   const daily = headSub('daily', snapFixture());
   assert.equal(text(daily).includes(`描述中译为${DESC_ZH_LABEL}`), true, '命中了却不报来源与时间戳 = 让人误以为是现译');
-  assert.doesNotMatch(text(headSub('weekly', snapFixture())), /预译/, '周榜那一档一行都没命中，不该说这句');
-  // 载荷说是什么就是什么：换成别的 label，界面跟着换 ⇒ 证明它读的是载荷，不是硬编码
-  const swapped = snapFixture({ descZh: { label: '换过的来源 · 2099-01-01', note: '换过的注', hits: { 'a/two': '甲乙丙' } } });
-  assert.equal(/描述中译为换过的来源 · 2099-01-01/.test(text(headSub('daily', swapped))), true);
-  assert.equal(text(headSub('weekly', swapped)).includes('预译'), false, 'label 里没带「预译」两个字时不许自己补');
-  assert.equal(text(headSub('monthly', swapped)).includes('描述中译为'), false, '空榜没行，别说这句');
-  const noHit = snapFixture({ descZh: { label: DESC_ZH_LABEL, note: DESC_ZH_NOTE, hits: {} } });
-  assert.doesNotMatch(text(headSub('daily', noHit)), /描述中译/, '一个都没命中还挂着来源标签 = 多此一举');
+  const weekly = text(headSub('weekly', snapFixture()));
+  assert.equal(weekly.includes('描述中文为现译 1 条'), true, '第二十二轮：这一榜的中文来自补译，句子要跟着说实话');
+  assert.equal(weekly.includes('预译'), false, '现译那一档不许混进内置表的词');
+  // 载荷说是什么就是什么：换成别的句子，界面跟着换 ⇒ 证明它读的是载荷，不是自己拼的
+  const swapped = snapFixture({
+    descZh: {
+      hits: { 'a/two': { zh: '甲乙丙', via: 'live', label: '换过的来源 · 2099-01-01', note: '换过的注', src: 'x' } },
+      heads: { daily: '载荷给的那一整句', weekly: '', monthly: '' },
+      liveNote: '',
+    },
+  });
+  assert.equal(text(headSub('daily', swapped)).includes('载荷给的那一整句'), true);
+  assert.equal(text(headSub('daily', swapped)).includes('条'), false, '条数由宿主算：界面自己数一遍就是第二份真相');
+  assert.equal(text(headSub('weekly', swapped)).includes('描述中文'), false, 'heads 给空串 ⇒ 整段不出现');
+  assert.equal(text(headSub('monthly', swapped)).includes('描述中文'), false, '空榜没行，别说这句');
+  const noHit = snapFixture({ descZh: { hits: {}, heads: { daily: '', weekly: '', monthly: '' }, liveNote: '' } });
+  assert.doesNotMatch(text(headSub('daily', noHit)), /描述中文/, '一个都没命中还挂着来源标签 = 多此一举');
+});
+
+check('client-58 现译这一路发不出去时榜面给一句实话（.gt-notice），其余三种情形一个字都不多', () => {
+  const { BoardCard } = loadClient().exports.__test.components;
+  const notices = (board, over = {}) => {
+    const tree = render(BoardCard, { snap: snapFixture({ descZh: { hits: {}, heads: { daily: '', weekly: '', monthly: '' }, liveNote: DESC_ZH_BLOCKED_NOTE, ...over } }), board });
+    return findByClass(tree, 'gt-notice').map((n) => text(n));
+  };
+  assert.equal(notices('daily').some((t) => t === DESC_ZH_BLOCKED_NOTE), true, '宿主给了那句实话 ⇒ 榜面原样念，一个字不改');
+  assert.equal(notices('monthly').length, 0, '月榜那一档没有行（rows 空）⇒ 不挂这句：那屏连原文都没显示，说"只显内置预译"是空话');
+  const quiet = findByClass(
+    render(BoardCard, { snap: snapFixture({ descZh: { hits: {}, heads: { daily: '', weekly: '', monthly: '' }, liveNote: '' } }), board: 'daily' }),
+    'gt-notice',
+  );
+  assert.equal(quiet.length, 0, 'liveNote 是空串（开关关着 / 发得出去 / 没有欠着的行）时不许凭空多一段');
 });
 
 check('client-16 新增列名跟着榜走：今日 / 本周 / 本月来自载荷，缺载荷回落中性词', () => {
@@ -1079,7 +1131,7 @@ check('client-36 速览小结：前 3 行、名次与新增照原文，跳转带
   assert.equal(items.length, 3, '只给前 3 行');
   assert.deepEqual(items.map((n) => text(findByClass(n, 'gt-rank')[0])), ['1', '2', '3']);
   assert.deepEqual(items.map((n) => text(findByClass(n, 'gt-mini-n')[0])), ['+512', '+512', '+512']);
-  assert.equal(findAllType(items[0], 'a')[0].props.href, 'https://github.com/a/one');
+  assert.equal(findAllType(items[0], 'a')[0].props.href, `https://github.com/${DESC_ZH_ROWS[0][0]}`);
   assert.equal(findAllType(items[0], 'a')[0].props.rel, 'noreferrer');
   assert.equal(text(findByClass(tree, 'gt-link')[0]), '完整榜单 →');
   findByClass(tree, 'gt-link')[0].props.onClick();
@@ -1411,10 +1463,10 @@ check('client-44 触发与 URL：三处仓库名都接了 onRepo，点一行才�
   const overview = page({ snap: snapFixture(), tab: 'overview' });
   const crossTree = page({ snap: snapFixture({ cross }), tab: 'overview' });
   // 列名现在带 gt-col- 前缀（client-15 钉着），`.gt-repo` 只剩仓库链接一个用处；仍按标签挑，防的是同名再回来
-  const repoAnchor = (tree) => findAllType(tree, 'a').find((a) => hasCls(a, 'gt-repo'));
   const anchors = [
-    ['日榜表', repoAnchor(board)],
-    ['总览速览', findByClass(overview, 'gt-mini-t')[0]],
+    // ★ 日榜首行刻意用 `a/two`（不在任何中文表里）：换到内置表那条主键上，这一条断言的期望值就跟着表跑（见上面 seen 那一句）。
+    ['日榜表', findByClass(board, 'gt-repo').find((a) => text(a) === 'a/two')],
+    ['总览速览', findByClass(overview, 'gt-mini-t').find((a) => text(a) === 'a/two')],
     ['跨榜同现', findByClass(crossTree, 'gt-mini-t').find((a) => a.props.href === 'https://github.com/c/rise')],
   ];
   assert.deepEqual(seen, [], '光是把三页渲染出来不该取任何详情（详情只在点击时取）');
@@ -1425,9 +1477,12 @@ check('client-44 触发与 URL：三处仓库名都接了 onRepo，点一行才�
     a.props.onClick({ button: 0, preventDefault() {} });
     await new Promise((r) => setTimeout(r, 0));
   }
+  // ★ 第一格取 `a/two` 而不是日榜第一行：日榜首行的主键是内置预译表里真那一条（夹具为了让中文列真命中，
+  //   见 snapFixture），拿它拼这条 URL 断言会把"编码斜杠"这条判据拴在一个会变动的夹具键上。
+  const encoded = encodeURIComponent('a/two');
   assert.deepEqual(plain(seen), [
-    '/gh-trending/api/repo?name=a%2Fone',
-    '/gh-trending/api/repo?name=a%2Fone',
+    `/gh-trending/api/repo?name=${encoded}`,
+    `/gh-trending/api/repo?name=${encoded}`,
     '/gh-trending/api/repo?name=c%2Frise',
   ], 'owner/repo 里的斜杠必须编码，否则多出一个路径段 ⇒ 宿主读到的 name 是坏的');
 });

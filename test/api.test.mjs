@@ -10,7 +10,7 @@ import {
   createApiHandler, snapshotOf, isLoopback, statusFor, openSse, createHub,
   ROUTE_PREFIX, ROUTES, readBody, translatorView, githubView,
 } from '../lib/api.js';
-import { createStateStore, createEventStore, createSeenStore, createPrefsStore } from '../lib/stores.js';
+import { createStateStore, createEventStore, createSeenStore, createPrefsStore, createTransStore } from '../lib/stores.js';
 import { createCaps } from '../lib/caps.js';
 import { BOARDS, DEFAULT_PREFS, TRENDING_SOURCE_NOTE, LANG_CHECK, TRANSPORT_HINT, FETCH_ATTEMPTS,
   TRANSLATE_COMMON_NOTE, LLM_NOT_READY_HINT, LLM_SWITCH_LABELS, LLM_KINDS, LLM_SWITCHES,
@@ -21,10 +21,15 @@ import { BOARDS, DEFAULT_PREFS, TRENDING_SOURCE_NOTE, LANG_CHECK, TRANSPORT_HINT
   PREF_CRED_FIELDS, PREF_SECRET_KEYS, GH_CRED_FIELDS, GH_TOKEN_NOTE, GH_TOKEN_REGISTER,
   LLM_README_LABEL_TRANSLATE,
   DEFAULT_TRANSLATE_ENGINE, engineZhLabel, ENGINE_LABEL_ZH, TRANS_ERROR_LABELS,
+  // 第二十二轮：榜面那一列的两种来源各有一句落款/一句实话，判据从 domain 取（在测试里手抄就成了第二真相）。
+  DESC_ZH_LIVE_NOTE, DESC_ZH_BLOCKED_NOTE, BOARD_ZH_BATCH_MAX,
   REPO_ERROR_LABELS, REPO_SECTION_LABELS, REPO_README_SOURCE_LABELS, REPO_CACHE_HOURS,
   README_ZH_GATE_SUFFIXES,
 } from '../lib/domain.js';
 import { DESC_ZH_ROWS, DESC_ZH_LABEL, DESC_ZH_NOTE, descZhFor } from '../lib/desc-zh.js';
+// ★ 命中判据的一半（归一后的原文）必须由库里那一份函数给出：测试里自己 `.replace(/\s+/g,' ')` 就是第二份真相，
+//   哪天归一口径改了，用例照样绿而榜面不再复用。
+import { transSrcKey } from '../lib/services/llm.js';
 // ★ 详情的载荷一律由**真的 repoView()** 造（10-06 的教训：手搓形状少了宿主内部那格，用例照样绿）。
 import { repoView } from '../lib/services/repo.js';
 // ★ 第十五轮：假那一路的桩要跟真服务对表（能力声明不一致时，派活判据测的是桩不是闸门）。
@@ -38,13 +43,17 @@ const stateRow = (board, rows, over = {}) => ({
 
 async function mkApi({ prefs = {}, states = {}, events = [], checkImpl, route = null, repoService = null, translator = null, webTranslator = null } = {}) {
   const facility = makeFakeFacility();
-  const logger = { warn: [], info: [] };
+  // ★ 第二十二轮把 `warn` 从裸数组改成"可调用的假 logger"：榜面补译的失败与降级全走 `logger.warn`，
+  //   上一版这里是 `{warn: []}` ⇒ 代码里的 `logger?.warn?.()` 直接 TypeError，测试崩在用例断言之前。
+  const warns = [];
+  const logger = { warns, warn: (m) => { warns.push(String(m)); }, info: [] };
   const opts = { getFacility: () => facility, logger };
   const stores = {
     state: createStateStore(opts),
     events: createEventStore(opts),
     seen: createSeenStore(opts),
     prefs: createPrefsStore(opts),
+    trans: createTransStore(opts),
   };
   const caps = createCaps({ logger });
   caps.mark('storageDomain', true);
@@ -64,6 +73,9 @@ async function mkApi({ prefs = {}, states = {}, events = [], checkImpl, route = 
     stateStore: stores.state,
     eventStore: stores.events,
     prefsStore: stores.prefs,
+    // 第二十二轮：榜面那一列的中文视图要吃译文表，补译批次也要读写它。
+    transStore: stores.trans,
+    getPrefs: () => prefsView,
     repoService,
     translator,
     webTranslator,
@@ -77,6 +89,7 @@ async function mkApi({ prefs = {}, states = {}, events = [], checkImpl, route = 
   });
   const prefsChanged = { n: 0 };
   handler.__prefsChanged = prefsChanged;
+  handler.__warns = warns;
   handler.__fanout = fanout;
   handler.__stores = stores;
   handler.__routeRef = routeRef;
@@ -161,23 +174,178 @@ check('snapshotOf：内置预译的 hits 只覆盖屏上那些行；descZh 键�
   });
   const snap = await snapshotOf({
     stateStore: h.__stores.state, eventStore: h.__stores.events, prefsStore: h.__stores.prefs,
-    caps: h.__caps, now: () => 9,
+    transStore: h.__stores.trans, caps: h.__caps, now: () => 9,
   });
   assert.equal(snap.boards.daily.rowsTotal, 6);
   assert.equal(snap.boards.daily.rows.length, 5, '先确认 topN=5 真的把第 6 行切掉了');
   assert.deepEqual(Object.keys(snap.descZh.hits), [r1, r3], 'hits 只该是屏上命中的那两条主键');
-  assert.equal(snap.descZh.hits[r1], z1);
-  assert.equal(snap.descZh.hits[r3], z3);
-  assert.equal(snap.descZh.label, DESC_ZH_LABEL, '来源与时间戳由宿主给，界面不自己编日期');
-  assert.equal(snap.descZh.note, DESC_ZH_NOTE);
+  // ★ 第二十二轮：hits 的值从「一句译文」升成「一句译文 + 它是谁译的」—— 同一列现在并排两种来源，
+  //   界面不自己判来源就没法落款，而「内置预译」和「现译」说的是两件不同的事（一个是编译期死的，一个是这台机器此刻发的）。
+  assert.deepEqual(snap.descZh.hits[r1], { zh: z1, via: 'builtin', label: DESC_ZH_LABEL, note: DESC_ZH_NOTE, src: s1 });
+  assert.deepEqual(snap.descZh.hits[r3], { zh: z3, via: 'builtin', label: DESC_ZH_LABEL, note: DESC_ZH_NOTE, src: s3 });
+  // 卡头按**这一张榜**算条数：拿三榜合并的数字冒充本榜，日榜就会念出一句和屏上对不上的话。
+  assert.equal(snap.descZh.heads.daily, `描述中译为${DESC_ZH_LABEL}`, '本榜命中 1 条 ⇒ 沿用内置那一句');
+  assert.equal(snap.descZh.heads.weekly, '', '原文被仓库改过 ⇒ 这一榜一条中文都没有，卡头那一段整段不出现');
+  assert.equal(snap.descZh.heads.monthly, `描述中译为${DESC_ZH_LABEL}`);
+  assert.deepEqual(Object.keys(snap.descZh.heads), BOARDS, 'heads 的键恒为三榜，切榜时客户端不用判 undefined');
+  assert.equal(snap.descZh.liveNote, '', '这一帧没有「该有中文却拿不到」的行 ⇒ 不唠叨');
 
   const bare = await mkApi({ states: { daily: null, weekly: null, monthly: null } });
   const empty = await snapshotOf({
     stateStore: bare.__stores.state, eventStore: bare.__stores.events, prefsStore: bare.__stores.prefs,
-    caps: bare.__caps, now: () => 9,
+    transStore: bare.__stores.trans, caps: bare.__caps, now: () => 9,
   });
-  assert.deepEqual(Object.keys(empty.descZh).sort(), ['hits', 'label', 'note'], '形状恒定：三键，不多不少');
+  assert.deepEqual(Object.keys(empty.descZh).sort(), ['heads', 'hits', 'liveNote'], '形状恒定：三键，不多不少');
   assert.deepEqual(empty.descZh.hits, {}, '一行榜面数据都没有时给空对象，不给 undefined');
+  assert.deepEqual(empty.descZh.heads, { daily: '', weekly: '', monthly: '' });
+});
+
+check('snapshotOf：榜面那一列也吃库里的现译行（第二十二轮改判）—— B 优先、逐字命中才算数、卡头两路并报', async () => {
+  const [bKey, bSrc, bZh] = DESC_ZH_ROWS[0];
+  const liveRepo = 'live/one';
+  const liveSrc = 'An english description worth translating';
+  const staleRepo = 'live/stale';
+  const h = await mkApi({
+    states: {
+      daily: stateRow('daily', [
+        crow(bKey, 1, { desc: bSrc }),                    // 内置命中
+        crow(liveRepo, 2, { desc: liveSrc }),             // 库里逐字命中 ⇒ 现译
+        crow(staleRepo, 3, { desc: 'The repo reworded this line afterwards' }), // 库里躺的是旧原文 ⇒ 作废
+      ]),
+      weekly: stateRow('weekly', [crow(liveRepo, 1, { desc: liveSrc })]),   // 同一仓库两张榜都挂着 ⇒ 视图里只有一条
+      monthly: null,
+    },
+    prefs: { topN: 5 },
+  });
+  // B 命中的那一行库里也有一批现译旧行：内置表是编译期核对过的，必须压过这台机器攒下的行（第八轮「B 优先」原样成立）。
+  await h.__stores.trans.put({ repo: bKey, kind: 'desc', src: transSrcKey(bSrc), zh: '模型重新译的那一句', at: 70, engine: 'keyless' });
+  await h.__stores.trans.put({ repo: liveRepo, kind: 'desc', src: transSrcKey(liveSrc), zh: '模型给的中文', at: 66, engine: 'host_llm' });
+  await h.__stores.trans.put({ repo: staleRepo, kind: 'desc', src: 'The repo reworded this line', zh: '上一版的中文', at: 65, engine: 'keyless' });
+  const snap = await snapshotOf({
+    stateStore: h.__stores.state, eventStore: h.__stores.events, prefsStore: h.__stores.prefs,
+    transStore: h.__stores.trans, caps: h.__caps, now: () => 99,
+  });
+  assert.equal(snap.descZh.hits[bKey].via, 'builtin', 'B 有这句 ⇒ 库里那行现译不能把它盖掉');
+  assert.equal(snap.descZh.hits[bKey].zh, bZh);
+  assert.deepEqual(snap.descZh.hits[liveRepo], {
+    zh: '模型给的中文', via: 'live', label: engineZhLabel('host_llm', 66), note: DESC_ZH_LIVE_NOTE, src: transSrcKey(liveSrc),
+  }, '现译那一行的落款跟的是**行里的 engine 与 at**，不是这一帧的档名和时刻（第九轮那条律）');
+  assert.equal(snap.descZh.hits[staleRepo], undefined, '原文变了 ⇒ 旧译文指鹿为马，宁可退回原文');
+  assert.equal(snap.descZh.heads.daily, '描述中文：内置预译 1 条 · 现译 1 条', '两路各报各的条数');
+  assert.equal(snap.descZh.heads.weekly, '描述中文为现译 1 条', '这一榜只有一路有货 ⇒ 另一路的“0 条”整段省掉');
+  assert.equal(snap.descZh.heads.monthly, '', '没跑过检查的榜不给任何中文句子');
+});
+
+check('snapshotOf：liveNote 只在「开关开着、库存得下、这一路此刻给不出」时说；其余几种闭嘴各有各的理由', async () => {
+  const h = await mkApi({
+    states: { daily: stateRow('daily', [crow('x/1', 1, { desc: 'A plain english description' })]), weekly: null, monthly: null },
+    prefs: { translateEngine: 'host_llm', llmDesc: true, topN: 5 },
+  });
+  const base = (over) => ({
+    stateStore: h.__stores.state, eventStore: h.__stores.events, prefsStore: h.__stores.prefs,
+    transStore: h.__stores.trans, caps: h.__caps, now: () => 5, translator: mkTranslatorStub({ ready: false }),
+    ...over,
+  });
+
+  // ① 开关开 + 库在 + 引擎没就绪 ⇒ 说实话，并指回设置页
+  let s = await snapshotOf(base());
+  assert.equal(s.descZh.liveNote, DESC_ZH_BLOCKED_NOTE, '开关开着却发不出去 ⇒ 榜面要讲清"只显内置预译"是这一时的故障');
+
+  // ② 开关关着 ⇒ 不唠叨（那一行开关自己就摆在设置页，榜面不该替它重复一遍）
+  s = await snapshotOf(base({ translator: mkTranslatorStub({ ready: false, enabled: () => false }) }));
+  assert.equal(s.descZh.liveNote, '', '开关关着却念"下一轮会自动再试" ⇒ 那句是假话，用户根本没开');
+
+  // ③ 引擎就绪 ⇒ 缺的那几句由这一轮批次去补，不在这里道歉
+  s = await snapshotOf(base({ translator: mkTranslatorStub({ ready: true }) }));
+  assert.equal(s.descZh.liveNote, '', '发得出去的时候不写故障句（否则每一帧都在喊一句此刻并不成立的话）');
+
+  // ④ 存不下 ⇒ 不说"下一轮会自动再试"：无存储的机器上下一轮也留不下译文，那里另有能力位横幅
+  const noStore = createTransStore({ getFacility: () => undefined, logger: { warn: () => {} } });
+  s = await snapshotOf(base({ transStore: noStore }));
+  assert.equal(s.descZh.liveNote, '', '无存储时那句"下一轮自动再试"兑现不了 ⇒ 宁可不说');
+  assert.deepEqual(s.descZh.hits, {}, '读不到库也不炸：这一列退回"只显内置预译"，而那在那些机器上是真话');
+
+  // ⑤ 屏上没有「该有中文却缺着」的行 ⇒ 即使引擎没就绪也不说一句
+  const covered = await mkApi({
+    states: { daily: stateRow('daily', [crow(DESC_ZH_ROWS[0][0], 1, { desc: DESC_ZH_ROWS[0][1] })]), weekly: null, monthly: null },
+    prefs: { translateEngine: 'host_llm', llmDesc: true, topN: 5 },
+  });
+  s = await snapshotOf({
+    stateStore: covered.__stores.state, eventStore: covered.__stores.events, prefsStore: covered.__stores.prefs,
+    transStore: covered.__stores.trans, caps: covered.__caps, now: () => 5,
+    translator: mkTranslatorStub({ ready: false }),
+  });
+  assert.equal(s.descZh.liveNote, '', '内置表已经覆盖屏上每一行 ⇒ 没有欠着的行，就不该出现"这一时发不出去"');
+});
+
+check('读路径零发：GET /api/snapshot 与 SSE 首帧一发不派，补译只挂在一轮检查之后', async () => {
+  // ★ 这一例的桩必须履行 `translate()` 那半份契约（自己落库）：runner 按设计不碰库，
+  //   桩不写库就测不出「补完之后下一帧真读得到」，而那正是本轮用户要看到的效果。
+  let trans = null;
+  const jobs = [];
+  const stub = {
+    ready: () => true,
+    kinds: () => [...LLM_KINDS],
+    enabled: (kind) => kind === 'desc',
+    async translate(arg) {
+      jobs.push(arg);
+      await trans.put({
+        repo: String(arg.repo).toLowerCase(), kind: arg.kind, src: transSrcKey(arg.text),
+        zh: `补的中文（${arg.repo}）`, at: 66, engine: 'host_llm',
+      });
+      return { ok: true, zh: `补的中文（${arg.repo}）`, cached: false, at: 66, label: engineZhLabel('host_llm', 66), stored: true, note: '', errKey: '', errText: '', engine: 'host_llm' };
+    },
+  };
+  const h = await mkApi({
+    prefs: { translateEngine: 'host_llm', llmDesc: true, topN: 5 },
+    states: { daily: stateRow('daily', [crow('a/1', 1, { desc: 'One english line' }), crow('b/2', 2, { desc: 'Another english line' })]), weekly: null, monthly: null },
+    translator: stub,
+  });
+  trans = h.__stores.trans;
+
+  const res = makeRes();
+  await h(makeReq({ method: 'GET', url: `${ROUTE_PREFIX}/api/stream` }), res);
+  await flush(5);
+  assert.equal(jobs.length, 0, '打开面板（SSE 首帧）一发不派 ⇒ 界面不会因为翻译而变慢');
+  const viaGet = await call(h, get('/api/snapshot'));
+  assert.equal(jobs.length, 0, `GET /api/snapshot 派了 ${jobs.length} 发 ⇒ 读路径必须零发`);
+  assert.equal(viaGet.res.json().data.descZh.hits['a/1'], undefined);
+
+  for (const fn of h.__fanout) fn({ type: 'update', at: 1234 });
+  await flush(20);
+  assert.deepEqual(jobs.map((j) => j.repo).sort(), ['a/1', 'b/2'], '一轮检查后才补，补的是屏上没命中的那几行');
+  assert.ok(jobs.every((j) => j.kind === 'desc'), '榜面这一路只补描述，摘要档各开各的');
+  const joined = res.writes.join('');
+  const frames = joined.split('event: update\ndata: ').length - 1;
+  assert.equal(frames, 2, '补成真推第二帧；只推一帧的话榜面会一直停在"没补"的那一屏');
+  const second = JSON.parse(joined.split('event: update\ndata: ')[2].split('\n\n')[0]);
+  assert.equal(second.descZh.hits['a/1'].via, 'live', '第二帧里现译行读得到');
+  assert.equal(second.descZh.heads.daily, '描述中文为现译 2 条');
+  h.dispose();
+});
+
+check('补译这一轮的闸门与上限：开关关 / 引擎没就绪 / 选中的那一路没接 ⇒ 零发；一轮最多 BOARD_ZH_BATCH_MAX 发', async () => {
+  const gate = async ({ llmDesc = true, ready = true, enabled = null, count = 20, engine = 'host_llm', wire = 'translator' }) => {
+    // ★ 桩的 `enabled` 跟着 `llmDesc` 走：真那一路（lib/services/llm.js）读的就是这一格偏好，
+    //   桩写死 `() => true` 的话，"开关关着所以零发"测的是桩不是闸门（第十五轮那条"桩=真服务"的对齐判据）。
+    const stub = mkTranslatorStub({ ready, enabled: enabled ?? ((kind) => (kind === 'desc' ? llmDesc : false)) });
+    const h = await mkApi({
+      prefs: { translateEngine: engine, llmDesc, topN: count },
+      states: { daily: stateRow('daily', Array.from({ length: count }, (_x, i) => crow(`z/${i}`, i + 1, { desc: `English line number ${i}` }))), weekly: null, monthly: null },
+      translator: wire === 'translator' ? stub : null,
+      webTranslator: wire === 'webTranslator' ? stub : null,
+    });
+    for (const fn of h.__fanout) fn({ type: 'update', at: 1 });
+    await flush(30);
+    const n = stub.jobs.length;
+    h.dispose();
+    return n;
+  };
+  assert.equal(await gate({ llmDesc: false }), 0, '「描述现译」开关关着 ⇒ 榜面这一路一发不派（用户裁定的第三条：不新增开关，就用这一档）');
+  assert.equal(await gate({ ready: false }), 0, '引擎没就绪 ⇒ 不发（发了也只是失败冷却，白占一次额度）');
+  assert.equal(await gate({ enabled: () => false }), 0, '那一路自己判了关 ⇒ 不发');
+  assert.equal(await gate({ engine: 'baidu', wire: 'translator' }), 0, '选中的是免费/官方那一路，而接上的只有宿主模型那一路 ⇒ 不发（两路服务互相不知道对方在）');
+  assert.equal(await gate({ count: 20 }), BOARD_ZH_BATCH_MAX, `一轮最多 ${BOARD_ZH_BATCH_MAX} 发（20 行屏上只补这么多）`);
 });
 
 check('snapshotOf：跨榜同现是三榜交叉算出来的，不再发请求', async () => {
