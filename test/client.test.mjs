@@ -943,10 +943,22 @@ check('client-31 根规则铁律：自带 border-box、禁 container query（mod
   assert.match(code, /\.gt-root\{[\s\S]*?box-sizing:border-box/, '根是 content-box 时 100% + padding 会把右半边顶出可视区');
   assert.ok(!/container-type|@container/.test(code), '宿主主区是 flex，容器查询算出 0 宽 ⇒ 整页塌成竖线');
   const rootRule = (code.match(/\.gt-root\{[^}]*\}/) || [''])[0];
-  assert.ok(rootRule, '找不到 .gt-root 规则块，下面三条根规则断言全部失效');
+  assert.ok(rootRule, '找不到 .gt-root 规则块，下面这一串根规则断言全部失效');
   assert.ok(!/max-width/.test(rootRule), '根设 max-width ⇒ 宿主主区比它宽时两侧各留一大片空白（真机 2026-10-08 用户截图）');
   assert.ok(!/margin:0 auto/.test(rootRule), '不限宽的根再居中无意义，且会掩盖宿主包裹层的左偏移');
-  assert.match(code, /\.gt-root\{[\s\S]*?overflow-y:auto/);
+  // 高度链：宿主 frame `height:100%` → centerCol `flex column + overflow:hidden` → 槽出口 `display:contents`
+  //（dsh-client-ui-layout/lib/client.js:73、dsh-client-ui-renderer/lib/client.js:1094）⇒ 根的布局父级是 centerCol，
+  // 它高度确定但**不自动传给 column flex 的 item**，所以根必须自己 flex:1 吃余量；centerCol 是 overflow:hidden ⇒ 超出的直接裁。
+  assert.ok(!/vh|max-height/.test(rootRule), '根拿视口单位封顶就比可用区高出一个宿主标题栏，多出来那截被 centerCol 裁掉（真机 2026-10-08 底部那段「跨榜同现」）');
+  assert.ok(/flex:1/.test(rootRule) && /min-height:0/.test(rootRule), '根必须吃满宿主给的那一格并允许收缩到内容以下，否则内部滚动区拿不到界');
+  assert.ok(/overflow:hidden/.test(rootRule) && !/overflow-y:auto/.test(rootRule), '根自己不滚：滚动权只在一层（整页一张卡→卡内；多段页→.gt-panel），两层都滚会互相抢');
+  const panelRule = (code.match(/\.gt-panel\{[^}]*\}/) || [''])[0];
+  assert.ok(/flex:1/.test(panelRule) && /min-height:0/.test(panelRule) && /overflow-y:auto/.test(panelRule),
+    '总览与设置是多段页，整页滚在 .gt-panel 这一层');
+  assert.match(code, /\.gt-panel>\*\{flex:none\}/,
+    '滚动容器的直接子不许收缩：panel 会滚之后子项默认 flex-shrink:1 就把三张段按比例压扁，卡自己的 overflow:hidden 裁掉压掉那截（真机 2026-10-08：三榜状态卡最后一条提示只露上半截），而且内容"适配"了以后该出现的滚动条反而不出现');
+  assert.ok(/\.gt-root>\.gt-card\{[^}]*flex:1[^}]*\}/.test(code) && /\.gt-root>\.gt-card>\.gt-card-b\{[^}]*flex:1/.test(code),
+    '「吃满高度」必须作用域在 .gt-root 的直接子：写成裸 .gt-card 会让总览那几张卡也跟着撑满一屏');
   assert.match(code, /@media \(max-width:900px\)\{\.gt-cols\{grid-template-columns:minmax\(0,1fr\)\}\}/, '双列窄视口退单列，轨道必须 minmax(0,1fr)');
   assert.match(code, /\.gt-tbl td\{[\s\S]*?text-overflow:ellipsis/, '长仓库名要截断，不许撑破 fixed 表');
   assert.match(code, /\.gt-root a\{color:inherit;text-decoration:none\}/,
@@ -1098,7 +1110,7 @@ check('client-38 页签样式：下划线用重量档不抢招牌色，速览靠
   const code = clientSrc();
   assert.match(code, /\.gt-tabs\{[\s\S]*?border-bottom:1px solid var\(--gt-line\)/);
   assert.match(code, /\.gt-tabs\{[\s\S]*?flex:none\}/,
-    '真机截图抓到：根是 column flex + max-height:100vh，超高就收缩 ⇒ 页签条被压成 1px、按钮被裁掉。flex:none 是唯一解（第九轮撤了 overflow-x:auto，收缩压力还在，别把它一起删）');
+    '真机截图抓到：根是 column flex 且高度由宿主定死，超高就收缩 ⇒ 页签条被压成 1px、按钮被裁掉。flex:none 是唯一解（第九轮撤了 overflow-x:auto，收缩压力还在，别把它一起删）');
   const tabsRule = (/\.gt-tabs\{[^}]*\}/.exec(code) || [''])[0];
   assert.ok(tabsRule && !/overflow/.test(tabsRule),
     '页签条一句 overflow-x:auto「防六签挤不下」就够在真机上多长出一条没意义的滚动条：它让 nav 成了两轴滚动容器，而 .gt-tab.on:after{bottom:-1px} 把可滚溢出撑到 34 > clientHeight 33 ⇒ 页签条右端一条竖向滚动条（用户圈的正是它，`tmp/probe-sbar.mjs` 在真宿主上量到 overflowsY:1、scrollWidth==clientWidth 说明根本没有横向溢出要防）');
@@ -1114,8 +1126,11 @@ check('client-38 页签样式：下划线用重量档不抢招牌色，速览靠
   assert.match(code, /\.gt-topbar\{[\s\S]*?padding-top:16px/, '顶部间距由顶栏自己拿');
   assert.match(code, /\.gt-root\{[\s\S]*?padding:0 20px 28px/,
     '根不能再留 padding-top：sticky 只贴到内容盒上沿，那 16px 的缝里会露出滚上来的卡片（真机量到 gap:16）');
-  assert.match(code, /\.gt-scroll\{[\s\S]*?max-height:calc\(100vh - \d+px\)/,
-    '卡内滚动区吃视口高：一榜一页签之后还按单页六段时代的 520px 算，第 15 行就藏在嵌套滚动条后面、下方空一大片（真机截图抓到）');
+  const scrollRule = (code.match(/\.gt-scroll\{[^}]*\}/) || [''])[0];
+  assert.ok(/flex:1/.test(scrollRule) && /min-height:0/.test(scrollRule),
+    '卡内滚动区吃 flex 传下来的余量：窗口多高它就多高，thead 的 sticky 相对它才成立');
+  assert.ok(!/max-height|vh|calc\(/.test(scrollRule),
+    '「视口减一个魔数」封顶换台机器就偏（原 calc(100vh - 220px) 那个 220 是页头+页签+卡头+卡脚的经验值，宿主标题栏多高它不知道）');
   assert.ok(!/mw-/.test(code), '照抄 modelwatch 的帧语义可以，类名前缀必须换（两份 CSS 抢同一批类名会互相盖）');
 });
 

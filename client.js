@@ -42,6 +42,14 @@ window.__ModuleLoader__.load({
     //   根是 content-box 时 width:100% + 左右 padding ⇒ 外框比面板宽 ⇒ 右半边被顶出可视区。
     // ⛔ 根不许设 max-width 居中：宿主主区比它宽时两侧各留一大片空白（真机 2026-10-08 用户截图）。
     //   余量交给 .gt-boards3 的 auto-fit 轨道和表格描述列的 width:auto 去吃。
+    // ⛔ 高度一律靠 flex 从宿主传下来，不许再拿 vh 或「视口减一个魔数」封顶。宿主链条是实读出来的：
+    //   frame `display:grid;height:100%;overflow:hidden` → centerCol `display:flex;flex-direction:column;
+    //   overflow:hidden`（dsh-client-ui-layout/lib/client.js:73）→ 槽出口 `display:contents`（不生成盒子，
+    //   dsh-client-ui-renderer/lib/client.js:1094）⇒ 根的布局父级就是 centerCol，高度确定但**不自动传给 item**
+    //   （column flex 的主轴是高度）。原先写 max-height:100vh 比可用区多出一个 Windows 标题栏 ⇒ 底部被裁，
+    //   而 centerCol 是 overflow:hidden，被裁就是真裁掉，宿主不会替你滚。
+    //   滚动权分两层且只有一层在滚：整页唯一那张卡（榜页／变化记录）滚在卡内 `.gt-scroll`；
+    //   多段页（总览／设置）滚在 `.gt-panel`。根自己 overflow:hidden，不参与抢。
     const STYLE_ID = 'dsh-plugin-gh-trending:style';
     const CSS = `
 .gt-root{--gt-fg:var(--dsw-alias-label-primary,#1a1a1a);--gt-muted:var(--dsw-alias-label-secondary,#6b6b70);
@@ -51,7 +59,7 @@ window.__ModuleLoader__.load({
   --gt-line:var(--dsw-alias-border-l1,#ebebed);--gt-line2:var(--dsw-alias-border-l2,#e0e0e3);
   --gt-ok:#1f883d;--gt-err:#c0392b;--gt-warn:#9a6700;--gt-info:var(--dsw-alias-state-business-primary,#3d6fe0);
   box-sizing:border-box;color:var(--gt-fg);background:transparent;padding:0 20px 28px;
-  width:100%;max-height:100vh;overflow-y:auto;
+  width:100%;flex:1;min-height:0;overflow:hidden;
   display:flex;flex-direction:column;gap:12px;font-size:13px;line-height:1.5}
 .gt-root *{box-sizing:border-box}
 .gt-num{font-variant-numeric:tabular-nums;font-feature-settings:"tnum" 1}
@@ -62,18 +70,28 @@ window.__ModuleLoader__.load({
 .gt-head-r{display:flex;align-items:center;gap:12px;flex-wrap:wrap}
 .gt-title{font-size:17px;font-weight:600;letter-spacing:.2px;white-space:nowrap}
 .gt-card{background:var(--gt-card);border:1px solid var(--gt-line);border-radius:12px;overflow:hidden;min-width:0}
+/* 只有「整页就一张卡」那两个页签（日／周／月榜、变化记录）吃满高度：选择器钉在 .gt-root 的直接子，
+   总览与设置里的多张卡不是它的直接子，拿不到这条。卡变 column flex 后卡头与卡脚各占死数、卡体吃余量。 */
+.gt-root>.gt-card{flex:1;min-height:0;display:flex;flex-direction:column}
+.gt-root>.gt-card>.gt-card-h,.gt-root>.gt-card>.gt-note{flex:none}
+.gt-root>.gt-card>.gt-card-b{flex:1;min-height:0}
 .gt-card-h{display:flex;align-items:center;gap:8px;padding:9px 14px;background:var(--gt-soft);border-bottom:1px solid var(--gt-line);flex-wrap:wrap}
 .gt-card-t{font-weight:600;font-size:13px;white-space:nowrap}
 .gt-card-n{margin-left:auto;color:var(--gt-muted);font-size:11px;font-variant-numeric:tabular-nums;white-space:nowrap}
 .gt-card-b{padding:12px 14px;display:flex;flex-direction:column;gap:10px;min-width:0}
 .gt-note{margin:0;padding:8px 14px 10px;border-top:1px solid var(--gt-line);color:var(--gt-faint);font-size:11px}
-.gt-panel{display:flex;flex-direction:column;gap:12px;min-width:0}
+.gt-panel{display:flex;flex-direction:column;gap:12px;min-width:0;flex:1;min-height:0;overflow-y:auto}
+/* ⛔ 滚动容器的直接子一律不许收缩。panel 自己会滚之后，子项默认的 flex-shrink:1 就变成一条没人要的
+   压缩律：三榜状态／各榜前三／跨榜同现被按比例压到刚好塞进这一格，而 .gt-card 带 overflow:hidden ⇒
+   压掉那截直接裁掉（真机 2026-10-08 用户截图：三榜状态卡最后一条提示只露出上半截），
+   更糟的是内容既然"适配"了，panel 那条该出现的滚动条反而不出现。 */
+.gt-panel>*{flex:none}
 .gt-notice{padding:7px 10px;border-radius:8px;border:1px solid var(--gt-line);border-left:3px solid var(--gt-warn);
   background:var(--gt-soft);color:var(--gt-muted);font-size:12px;line-height:1.5}
 .gt-notice-err{border-left-color:var(--gt-err)}
-/* 一榜一页签之后，卡内滚动区拿的是整页高度，不再是单页六段时那个 520px 小窗：
-   固定值让日榜第 15 行藏在嵌套滚动条后面、下方却空着一大片（真机截图抓到）。 */
-.gt-scroll{max-height:calc(100vh - 220px);overflow-y:auto;overflow-x:hidden;min-width:0}
+/* 卡内滚动区吃卡体剩下的全部高（flex 传下来的，不是「视口减 220px」那种猜法）：
+   窗口多高它就多高，矮到装不下时表格自己滚，表头 sticky 相对它仍然成立。 */
+.gt-scroll{flex:1;min-height:0;overflow-y:auto;overflow-x:hidden;min-width:0}
 .gt-tbl{width:100%;border-collapse:separate;border-spacing:0;table-layout:fixed;font-size:12px}
 .gt-tbl th{position:sticky;top:0;z-index:1;background:var(--gt-card);text-align:left;font-weight:500;
   color:var(--gt-muted);font-size:11px;padding:7px 8px;border-bottom:1px solid var(--gt-line);white-space:nowrap}
@@ -137,14 +155,13 @@ window.__ModuleLoader__.load({
 .gt-pill{display:inline-flex;align-items:center;gap:6px;padding:3px 10px;border-radius:999px;
   border:1px solid var(--gt-line);background:var(--gt-soft);font-size:12px;color:var(--gt-muted);white-space:nowrap}
 /* ---------- 页签 ---------- */
-/* 页头 + 页签条钉在滚动顶部：一榜一页签之后内容有整页高，滚到底就切不了签了。
-   两者必须包在同一块 sticky 里——各自 sticky 到 top:0 会叠在一起，页签盖住页头。
-   顶部那 16px 从根挪到这里：根还留着 padding-top 时，sticky 只贴到内容盒上沿，
-   那 16px 的缝里会露出滚上来的卡片（真机量到 gap:16、缝里站着 .gt-mini）。
-   flex:none 同 .gt-tabs 的教训（根是 column flex，超高就收缩）。 */
+/* 滚动下移到卡内 .gt-scroll 与多段页的 .gt-panel 之后，这一块本来就常驻（根不滚，它不在任何滚动流里）。
+   position:sticky 留着当保险：哪天某页签改回整页滚，它才重新担事。z-index:2 与 background 是真在用的——
+   详情浮层遮罩要压过它（z-index:40），它得压过榜卡。顶部那 16px 由本块自己拿（根的 padding-top 清零）。
+   flex:none 同 .gt-tabs 的教训（根是 column flex 且高度由宿主定死，超高就收缩）。 */
 .gt-topbar{position:sticky;top:0;z-index:2;background:var(--gt-card);flex:none;padding-top:16px;
   display:flex;flex-direction:column;gap:12px;min-width:0}
-/* ★ flex:none 不是可有可无：根是 column flex 且 max-height:100vh，内容一超高就产生收缩压力。
+/* ★ flex:none 不是可有可无：根是 column flex 且高度由宿主定死（flex:1 + min-height:0），内容一超高就产生收缩压力。
    ★★ 这里原先还挂着 overflow-x:auto「防六签挤不下」，第九轮真机截图把它撤了，两条理由：
      ① 它让 nav 成了两轴滚动容器（overflow-y:visible 配 overflow-x:auto 按规范算 auto），
         而 .gt-tab.on:after{bottom:-1px} 把可滚溢出撑到 34 > clientHeight 33 ⇒ 页签条右端凭空多出一条竖向滚动条
@@ -209,7 +226,7 @@ window.__ModuleLoader__.load({
    ★ 透明度是这里唯一能被读成「黑块」的地方，取值必须真机截图核，不能只看断言。 */
 .gt-modal-mask{position:fixed;inset:0;z-index:40;display:flex;align-items:center;justify-content:center;
   padding:24px;background:rgba(15,17,21,.34);background:color-mix(in srgb,var(--gt-fg) 26%,transparent)}
-/* 对话框自己滚：根容器也在滚，两层都滚会互相抢；max-height 收在视口内才谈得上 overflow。 */
+/* 浮层是 position:fixed，基准本来就是整扇视口 ⇒ 这条 vh 留着（根不滚，但它不挂在根的 flex 链上）。 */
 .gt-modal{box-sizing:border-box;width:100%;max-width:680px;max-height:86vh;overflow-y:auto;min-width:0;
   display:flex;flex-direction:column;background:var(--gt-card);border:1px solid var(--gt-line2);
   border-radius:12px;box-shadow:0 12px 32px rgba(15,17,21,.18)}
