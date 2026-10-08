@@ -942,7 +942,10 @@ check('client-31 根规则铁律：自带 border-box、禁 container query（mod
   const code = clientSrc();
   assert.match(code, /\.gt-root\{[\s\S]*?box-sizing:border-box/, '根是 content-box 时 100% + padding 会把右半边顶出可视区');
   assert.ok(!/container-type|@container/.test(code), '宿主主区是 flex，容器查询算出 0 宽 ⇒ 整页塌成竖线');
-  assert.match(code, /\.gt-root\{[\s\S]*?max-width:1320px/);
+  const rootRule = (code.match(/\.gt-root\{[^}]*\}/) || [''])[0];
+  assert.ok(rootRule, '找不到 .gt-root 规则块，下面三条根规则断言全部失效');
+  assert.ok(!/max-width/.test(rootRule), '根设 max-width ⇒ 宿主主区比它宽时两侧各留一大片空白（真机 2026-10-08 用户截图）');
+  assert.ok(!/margin:0 auto/.test(rootRule), '不限宽的根再居中无意义，且会掩盖宿主包裹层的左偏移');
   assert.match(code, /\.gt-root\{[\s\S]*?overflow-y:auto/);
   assert.match(code, /@media \(max-width:900px\)\{\.gt-cols\{grid-template-columns:minmax\(0,1fr\)\}\}/, '双列窄视口退单列，轨道必须 minmax(0,1fr)');
   assert.match(code, /\.gt-tbl td\{[\s\S]*?text-overflow:ellipsis/, '长仓库名要截断，不许撑破 fixed 表');

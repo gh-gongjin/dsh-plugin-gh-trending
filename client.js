@@ -40,6 +40,8 @@ window.__ModuleLoader__.load({
     //   根容器宽度按内容算 ⇒ containment 之后算出 0 宽，整页塌成竖线）。只用 @media。
     // ⛔ 根规则必须自带 box-sizing:border-box：宿主 web 端 CSS 里没有任何通配 box-sizing，
     //   根是 content-box 时 width:100% + 左右 padding ⇒ 外框比面板宽 ⇒ 右半边被顶出可视区。
+    // ⛔ 根不许设 max-width 居中：宿主主区比它宽时两侧各留一大片空白（真机 2026-10-08 用户截图）。
+    //   余量交给 .gt-boards3 的 auto-fit 轨道和表格描述列的 width:auto 去吃。
     const STYLE_ID = 'dsh-plugin-gh-trending:style';
     const CSS = `
 .gt-root{--gt-fg:var(--dsw-alias-label-primary,#1a1a1a);--gt-muted:var(--dsw-alias-label-secondary,#6b6b70);
@@ -49,7 +51,7 @@ window.__ModuleLoader__.load({
   --gt-line:var(--dsw-alias-border-l1,#ebebed);--gt-line2:var(--dsw-alias-border-l2,#e0e0e3);
   --gt-ok:#1f883d;--gt-err:#c0392b;--gt-warn:#9a6700;--gt-info:var(--dsw-alias-state-business-primary,#3d6fe0);
   box-sizing:border-box;color:var(--gt-fg);background:transparent;padding:0 20px 28px;
-  width:100%;max-width:1320px;margin:0 auto;max-height:100vh;overflow-y:auto;
+  width:100%;max-height:100vh;overflow-y:auto;
   display:flex;flex-direction:column;gap:12px;font-size:13px;line-height:1.5}
 .gt-root *{box-sizing:border-box}
 .gt-num{font-variant-numeric:tabular-nums;font-feature-settings:"tnum" 1}
