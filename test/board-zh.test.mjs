@@ -11,7 +11,7 @@
  */
 import { check, runAll, assert } from './_helpers.mjs';
 import {
-  descZhView, visibleBoardRows, allVisibleRows, boardDescHeadText, boardDescZhHead,
+  descZhView, visibleBoardRows, allVisibleRows, descZhRows, boardDescHeadText, boardDescZhHead,
   createBoardZhRunner, BOARD_DESC_ZH_VIAS,
 } from '../lib/board-zh.js';
 import { descZhFor, DESC_ZH_ROWS, DESC_ZH_LABEL, DESC_ZH_NOTE } from '../lib/desc-zh.js';
@@ -77,6 +77,61 @@ check('visibleBoardRows 只给批次（同仓库三榜取名次最好那条）�
   assert.equal(once.length, 2, '一仓库三发就是白烧两发');
   assert.equal(allVisibleRows(boards).length, 4, '视图吃的是原样四行 —— 按名次去重会把"另一张榜上逐字对得上的那一行"丢掉');
   assert.deepEqual(visibleBoardRows(boardsOf({})), [], '三榜都空给空数组，不给 undefined');
+});
+
+/* ---------------- 参与行集合（10-10 改判：那一档开着才进现译） ---------------- */
+
+check('★ descZhRows：那一档开着 ⇒ 它那一批并进参与集合；关掉或 prefs 缺位 ⇒ 一行都不进（出厂关着的档不给没用它的人烧额度）', () => {
+  const boards = boardsOf({ daily: [crow('d/one', 1, 'Board line one'), crow('d/two', 2, 'Board line two')] });
+  const allRows = [{ rank: 1, repo: 'a/one', name: 'a/one', desc: 'Site-wide line', stars: 90_000 }];
+  const on = descZhRows({ boards, allStarsRows: allRows, allStarsEnabled: true });
+  assert.deepEqual(on.map((r) => r.repo), ['d/one', 'd/two', 'a/one'], '开着 ⇒ 榜面两行 + 那一档一行都在场（视图那一路不去重）');
+  assert.equal(on[2].zhGroup, 1, '并进来的行带着组标记（预算归属与那句故障话都读它）');
+  assert.equal(on[0].zhGroup, undefined, '榜面那几行不拷不打标：默认 0 就是"榜面优先"，不靠第二条判据');
+  assert.equal(allRows[0].zhGroup, undefined, '★ 传进来的那一批就是载荷本身（snap.stars.allStars.rows）⇒ 打标必须拷，污染载荷会把内部字段送上屏');
+  for (const off of [false, undefined, null, 0, 'true']) {
+    const r = descZhRows({ boards, allStarsRows: allRows, allStarsEnabled: off });
+    assert.deepEqual(r.map((x) => x.repo), ['d/one', 'd/two'], `allStarsEnabled=${JSON.stringify(off)} 只认真 true`);
+  }
+  assert.deepEqual(descZhRows({ boards, allStarsEnabled: true }).map((r) => r.repo), ['d/one', 'd/two'], '那一档压根没落库（没传行）⇒ 不炸、榜面照旧');
+});
+
+check('★ descZhRows 的 dedupe 只管榜面那一段：批次按仓库去重，那一档原样带过来（同仓库在两处都出现时由排队那趟兜住）', () => {
+  const boards = boardsOf({
+    daily: [crow('s/same', 5, 'Same line'), crow('d/only', 1, 'Daily only')],
+    weekly: [crow('s/same', 2, 'Same line')],
+  });
+  const allRows = [crow('s/same', 1, 'Same line'), crow('a/two', 2, 'Site-wide two')];
+  const batch = descZhRows({ boards, allStarsRows: allRows, allStarsEnabled: true, dedupe: true });
+  assert.deepEqual(batch.slice(0, 2).map((r) => r.repo).sort(), ['d/only', 's/same'], '榜面那一段去重成两仓库（前两格，顺序由 visibleBoardRows 的首次出现决定）');
+  assert.deepEqual(batch.slice(2).map((r) => [r.repo, r.rank]), [['s/same', 1], ['a/two', 2]], '那一档那两行照原样接在后面，不替它去重（rank 也是它自己那一批的位次）');
+  const queued = descZhView(batch, []).todo.map((t) => t.repo);
+  assert.equal(queued.filter((r) => r === 's/same').length, 1, '同一仓库跨两组也只排一发');
+});
+
+check('★ 每轮那点预算先给榜面吃饱：全站的 rank 1 不许插到榜面行前面（两个 rank 不同轴：榜内名次 vs 全站名次）', () => {
+  const boardRows = [crow('b/r5', 5, 'Board five'), crow('b/r6', 6, 'Board six')];
+  const allRows = [{ rank: 1, repo: 'a/r1', desc: 'Site one' }, { rank: 2, repo: 'a/r2', desc: 'Site two' }, { rank: 3, repo: 'a/r3', desc: 'Site three' }];
+  const rows = descZhRows({
+    boards: { daily: { rows: boardRows } }, allStarsRows: allRows, allStarsEnabled: true,
+  });
+  const v = descZhView(rows, [], { batchMax: 3 });
+  assert.deepEqual(v.todo.map((t) => t.repo), ['b/r5', 'b/r6', 'a/r1'],
+    '★ 混排会把三个名额全给 a/r1~r3（全站名次 1、2、3 更小）⇒ 默认屏反而一行都补不到；组序就是那条优先级');
+  assert.deepEqual(v.todo.map((t) => t.group), [0, 0, 1], '组序落在排队项上，读得出这一发是为哪一屏花的');
+});
+
+check('★ boardMissing 只数榜面那组：三榜一行不欠、只有那一档欠着 ⇒ missing>0 而 boardMissing===0', () => {
+  const [repo, src, zh] = B0;
+  const rows = descZhRows({
+    boards: { daily: { rows: [crow(repo, 1, src)] } },
+    allStarsRows: [{ rank: 1, repo: 'a/untranslated', desc: 'A plain english line' }],
+    allStarsEnabled: true,
+  });
+  const v = descZhView(rows, []);
+  assert.equal(v.hits[repo].zh, zh, '前提：榜面那一行由内置预译压中，榜面这会儿不欠一句');
+  assert.equal(v.missing, 1, '那一档欠一句（参与集合的总欠账要如实数着，todo 就是从它来的）');
+  assert.equal(v.boardMissing, 0, '★ 榜面一句都不欠 ⇒ 「榜面这一列只显内置预译」那句此刻是假话，判据不能吃 missing');
 });
 
 check('descZhView：内置表优先压过库里的现译行（第八轮那句「B 优先」原样成立）', () => {

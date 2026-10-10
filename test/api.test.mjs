@@ -10,7 +10,7 @@ import {
   createApiHandler, snapshotOf, isLoopback, statusFor, openSse, createHub,
   ROUTE_PREFIX, ROUTES, readBody, translatorView, githubView,
 } from '../lib/api.js';
-import { createStateStore, createEventStore, createSeenStore, createPrefsStore, createTransStore } from '../lib/stores.js';
+import { createStateStore, createEventStore, createSeenStore, createPrefsStore, createTransStore, createSearchStore } from '../lib/stores.js';
 import { createCaps } from '../lib/caps.js';
 import { BOARDS, DEFAULT_PREFS, TRENDING_SOURCE_NOTE, LANG_CHECK, TRANSPORT_HINT, FETCH_ATTEMPTS,
   TRANSLATE_COMMON_NOTE, LLM_NOT_READY_HINT, LLM_SWITCH_LABELS, LLM_KINDS, LLM_SWITCHES,
@@ -25,8 +25,13 @@ import { BOARDS, DEFAULT_PREFS, TRENDING_SOURCE_NOTE, LANG_CHECK, TRANSPORT_HINT
   DESC_ZH_LIVE_NOTE, DESC_ZH_BLOCKED_NOTE, BOARD_ZH_BATCH_MAX,
   REPO_ERROR_LABELS, REPO_SECTION_LABELS, REPO_README_SOURCE_LABELS, REPO_CACHE_HOURS,
   README_ZH_GATE_SUFFIXES,
+  // 第二十三轮：明星那一屏的句子与预算同样从 domain 取（在测试里手抄「未开启」那一句或那个发数，就是第二份真相）。
+  STARS_QUOTA_OFF_NOTE, STARS_NO_STORE_NOTE, starsQuotaLine, SEARCH_MAX_PER_ROUND,
 } from '../lib/domain.js';
 import { DESC_ZH_ROWS, DESC_ZH_LABEL, DESC_ZH_NOTE, descZhFor } from '../lib/desc-zh.js';
+// ★ 第二十三轮：明星那一屏的装配判据吃的是**同一个纯视图**（`lib/stars.js`）。
+//   用例在测试里自己排一遍榜史/判一遍档就是第二份真相 —— 那样哪天宿主口径改了，用例照样绿而界面是旧的。
+import { starsView } from '../lib/stars.js';
 // ★ 命中判据的一半（归一后的原文）必须由库里那一份函数给出：测试里自己 `.replace(/\s+/g,' ')` 就是第二份真相，
 //   哪天归一口径改了，用例照样绿而榜面不再复用。
 import { transSrcKey } from '../lib/services/llm.js';
@@ -41,7 +46,25 @@ const stateRow = (board, rows, over = {}) => ({
   failStreak: 0, rows, prevRows: [], ...over,
 });
 
-async function mkApi({ prefs = {}, states = {}, events = [], checkImpl, route = null, repoService = null, translator = null, webTranslator = null } = {}) {
+/**
+ * 「全站高星」那一发的桩：形状**逐格对齐 `searchRepositories()` 的成功回包**（`{ok, at, rate:{left,limit,resetAt,authed}, rows}`），
+ * 行形状对齐 domain 的 `SEARCH_ROW_SHAPE`，取值抄 `test/fixtures/repo-search.json` 第 4 条（与 `test/store.test.mjs` 同一份出处）。
+ * ★ 桩的 `at` 取 `7777` —— 与 `mkApi` 那个 `now()` 同一个数，坏轮冻结那类判据才分得开"发起时刻"和"成功时刻"。
+ */
+const SEARCH_ROW = Object.freeze({
+  rank: 4, repo: 'freecodecamp/freecodecamp', name: 'freeCodeCamp/freeCodeCamp',
+  desc: "freeCodeCamp.org's open-source codebase and curriculum. Learn math, programming, and computer science for free.",
+  lang: 'TypeScript', stars: 456734,
+});
+const searchOk = (over = {}) => ({
+  ok: true, at: 7777, rate: { left: 9, limit: 10, resetAt: 1791518294000, authed: false }, rows: [SEARCH_ROW], ...over,
+});
+/** 失败桩：`errText` 是**原样回执**（不进 `REPO_ERROR_LABELS`，两套池子那条），额度四格刻意与成功桩全不一样。 */
+const searchBad = (over = {}) => ({
+  ok: false, errKey: 'rate_limited', errText: '限额用尽（403，重置于 2026/10/9 04:38:14）', transport: false, ...over,
+});
+
+async function mkApi({ prefs = {}, states = {}, events = [], checkImpl, route = null, repoService = null, translator = null, webTranslator = null, searchFetcher = null, seenStore = null, now = () => 7777 } = {}) {
   const facility = makeFakeFacility();
   // ★ 第二十二轮把 `warn` 从裸数组改成"可调用的假 logger"：榜面补译的失败与降级全走 `logger.warn`，
   //   上一版这里是 `{warn: []}` ⇒ 代码里的 `logger?.warn?.()` 直接 TypeError，测试崩在用例断言之前。
@@ -54,6 +77,9 @@ async function mkApi({ prefs = {}, states = {}, events = [], checkImpl, route = 
     seen: createSeenStore(opts),
     prefs: createPrefsStore(opts),
     trans: createTransStore(opts),
+    // ★ 第二十三轮：装配层多接一张表（全站高星那一批，单行 key=`batch`）。这里用**真仓储 + 假设施**，
+    //   不用手搓对象 —— 判据吃的是 schema 认过的形状（手搓会让"落库形状变了"这一类改动在装配层测不出来）。
+    search: createSearchStore(opts),
   };
   const caps = createCaps({ logger });
   caps.mark('storageDomain', true);
@@ -68,6 +94,11 @@ async function mkApi({ prefs = {}, states = {}, events = [], checkImpl, route = 
 
   const fanout = new Set();
   const routeRef = { current: route };
+  // ★ 那一发的**计数包装**由工厂自己套（注入的桩也照数）：「读路径零发」这条判据吃的是产品侧信号 ——
+  //   装配层有没有在打开面板时替用户花配额，只看得到"这一发真被打过没有"。
+  const searchCalls = [];
+  const innerSearchFetcher = searchFetcher ?? (async () => searchOk());
+  const countedSearchFetcher = async (...args) => { searchCalls.push(args); return innerSearchFetcher(...args); };
   const handler = createApiHandler({
     check: fakeCheck,
     stateStore: stores.state,
@@ -75,15 +106,22 @@ async function mkApi({ prefs = {}, states = {}, events = [], checkImpl, route = 
     prefsStore: stores.prefs,
     // 第二十二轮：榜面那一列的中文视图要吃译文表，补译批次也要读写它。
     transStore: stores.trans,
+    // 第二十三轮：明星那一屏的两张本地表（读），加上装配层绑好的那一发（只在轮次后写）。
+    seenStore: seenStore ?? stores.seen,
+    searchStore: stores.search,
+    searchFetcher: countedSearchFetcher,
     getPrefs: () => prefsView,
     repoService,
     translator,
     webTranslator,
     caps,
     logger,
-    now: () => 7777,
+    now,
     getTransportRoute: () => routeRef.current,
-    onPrefsChanged: async () => { prefsChanged.n += 1; },
+    // ★ 与装配层 `index.js` 的 `onPrefsChanged` 同一条读法：回调里先 `reloadPrefs()`（把内存视图刷成库里的值）再推帧。
+    //   上一版这里只计数 ⇒ 视图永远停在初始值：runner 的 `off` 闸吃的是 `getPrefs()`，视图没刷就永远过不了闸，
+    //   「开启即拉」那条判据会假绿（把 kick 挪到 onPrefsChanged 之前这种接错，在这儿一样测不出来）。
+    onPrefsChanged: async () => { prefsChanged.n += 1; Object.assign(prefsView, await stores.prefs.read()); },
     subscribeEvent: (fn) => { fanout.add(fn); return () => fanout.delete(fn); },
     sseTimers: { setIntervalMod: () => ({ unref() {} }), clearIntervalMod: () => {} },
   });
@@ -92,6 +130,7 @@ async function mkApi({ prefs = {}, states = {}, events = [], checkImpl, route = 
   handler.__warns = warns;
   handler.__fanout = fanout;
   handler.__stores = stores;
+  handler.__searchCalls = searchCalls;
   handler.__routeRef = routeRef;
   handler.__getRoute = () => routeRef.current;
   handler.__facility = facility;
@@ -346,6 +385,410 @@ check('补译这一轮的闸门与上限：开关关 / 引擎没就绪 / 选中�
   assert.equal(await gate({ enabled: () => false }), 0, '那一路自己判了关 ⇒ 不发');
   assert.equal(await gate({ engine: 'baidu', wire: 'translator' }), 0, '选中的是免费/官方那一路，而接上的只有宿主模型那一路 ⇒ 不发（两路服务互相不知道对方在）');
   assert.equal(await gate({ count: 20 }), BOARD_ZH_BATCH_MAX, `一轮最多 ${BOARD_ZH_BATCH_MAX} 发（20 行屏上只补这么多）`);
+});
+
+/* ---------------- 10-10 改判（用户裁定 A）：那一档开着时接上现译 ---------------- */
+
+/** 往「全站高星」那张表落一批（真仓储、真 schema 认过的行形状），让快照读得到那一档。 */
+async function writeSearchBatch(h, rows) {
+  await h.__stores.search.write({
+    at: 7000, lastFetchAt: 7000, ok: true, error: '', transport: false, rows,
+    rateLeft: 9, rateLimit: 10, rateResetAt: 0, rateAuthed: false,
+  });
+}
+
+check('★ 快照那一列吃的是同一份集合：那一档开着 ⇒ 它那一批里库里已译的行上屏；关掉 ⇒ 译文躺在库里也不给（屏上退回原文）', async () => {
+  const siteZh = '那一档那一行的中文';
+  const snapOf = async (enabled) => {
+    const h = await mkApi({
+      prefs: { translateEngine: 'host_llm', llmDesc: true, allStarsEnabled: enabled, topN: 5 },
+      states: { daily: stateRow('daily', [crow('b/1', 1, { desc: 'A board line' })]), weekly: null, monthly: null },
+    });
+    await writeSearchBatch(h, [SEARCH_ROW]);
+    await h.__stores.trans.put({ repo: SEARCH_ROW.repo, kind: 'desc', src: transSrcKey(SEARCH_ROW.desc), zh: siteZh, at: 60, engine: 'host_llm' });
+    const data = (await call(h, get('/api/snapshot'))).res.json().data;
+    h.dispose();
+    return data;
+  };
+  const on = await snapOf(true);
+  assert.equal(on.descZh.hits[SEARCH_ROW.repo]?.zh, siteZh, '开着 ⇒ 那一档那一行的现译上屏（用户裁定的就是这一格）');
+  assert.equal(on.descZh.hits[SEARCH_ROW.repo].via, 'live');
+  const off = await snapOf(false);
+  assert.equal(off.descZh.hits[SEARCH_ROW.repo], undefined,
+    '★ 关掉 ⇒ 参与集合里压根没有它，库里那句不上的屏：出厂关着的档不该给没用它的人烧翻译额度，也不该显示"补好的中文"');
+  assert.equal(off.stars.allStars.rows[0].desc, SEARCH_ROW.desc, '载荷那一行的原文一个字没动（不译不等于改写）');
+});
+
+check('★ 轮次后补译吃的也是那份集合：开着 ⇒ 那一档的未译行进批次；关掉 ⇒ 同一份库只补榜面', async () => {
+  const once = async (enabled) => {
+    const stub = mkTranslatorStub({ ready: true });
+    const h = await mkApi({
+      prefs: { translateEngine: 'host_llm', llmDesc: true, allStarsEnabled: enabled, topN: 5 },
+      states: { daily: stateRow('daily', [crow('b/1', 1, { desc: 'Board one' }), crow('b/2', 2, { desc: 'Board two' })]), weekly: null, monthly: null },
+      translator: stub,
+    });
+    await writeSearchBatch(h, [SEARCH_ROW]);
+    for (const fn of h.__fanout) fn({ type: 'update', at: 1234 });
+    await flush(20);
+    const repos = stub.jobs.map((j) => j.repo).sort();
+    h.dispose();
+    return repos;
+  };
+  assert.deepEqual(await once(true), ['b/1', 'b/2', SEARCH_ROW.repo], '开着 ⇒ 那一档那一行也在补的名单里（榜面两行 + 它一行）');
+  assert.deepEqual(await once(false), ['b/1', 'b/2'], '关掉 ⇒ 只补榜面两行，那一档一行都不派');
+});
+
+check('★ liveNote 的欠账只数榜面那一组：三榜一句不欠、只有那一档欠着 ⇒ 榜面不念那句「这一列只显内置预译」', async () => {
+  const [bKey, bSrc] = DESC_ZH_ROWS[0];
+  const probe = async (boardRow) => {
+    const h = await mkApi({
+      prefs: { translateEngine: 'host_llm', llmDesc: true, allStarsEnabled: true, topN: 5 },
+      states: { daily: boardRow, weekly: null, monthly: null },
+      // ★ 引擎这一路要**接上但没就绪**：那句话的四格判据里有"这一路此刻给不出"，桩没接（null）时条件压根不成立，
+      //   那样两档都会是空串 —— 判据看着绿，实际是空跑（对照那一档会一起假绿）。
+      translator: mkTranslatorStub({ ready: false }),
+    });
+    await writeSearchBatch(h, [SEARCH_ROW]);
+    const data = (await call(h, get('/api/snapshot'))).res.json().data;
+    h.dispose();
+    return data.descZh.liveNote;
+  };
+  assert.equal(await probe(stateRow('daily', [crow(bKey, 1, { desc: bSrc })])), '',
+    '★ 榜面被内置表覆盖、只有那一档欠着 ⇒ 榜面念"这一列只显内置预译"是假话（判据必须吃 boardMissing）');
+  assert.equal(await probe(stateRow('daily', [crow('x/1', 1, { desc: 'A plain english description' })])), DESC_ZH_BLOCKED_NOTE,
+    '对照：榜面自己就欠着、引擎这会儿发不出去 ⇒ 那一句照旧要说（换成 boardMissing 也不能把真故障念成没事）');
+});
+
+/* ---------------- 第二十三轮 · 步骤 5：明星那一屏进快照 + 轮次后那一发 ---------------- */
+
+/** 从 SSE 的 writes 里数 `event: update` 帧（追帧判据吃的是"浏览器真收到了几帧"，不是内部计数）。 */
+const updateFrames = (raw) => raw.split('event: update\ndata: ').length - 1;
+/** 第 i 个 update 帧（**1 起**：`split` 把分隔符吃掉之后，索引 0 是帧前的那一段）。 */
+const frameAt = (raw, i) => JSON.parse(raw.split('event: update\ndata: ')[i].split('\n\n')[0]);
+
+check('明星那一屏进快照：stars 那两层的键表恒在，SSE 首帧与 GET 同形；读路径零发（打开面板与 GET 各一派零发）', async () => {
+  const h = await mkApi({ states: { daily: stateRow('daily', [crow('a/1', 1)]), weekly: null, monthly: null } });
+  const res = makeRes();
+  await h(makeReq({ method: 'GET', url: `${ROUTE_PREFIX}/api/stream` }), res);
+  await flush(5);
+  assert.equal(h.__searchCalls.length, 0, 'SSE 首帧的装配里派了那一发 ⇒ 每开一次面板就烧一次 search 配额');
+
+  const frame = JSON.parse(res.writes.join('').split('event: snapshot\ndata: ')[1].split('\n\n')[0]);
+  const viaGet = (await call(h, get('/api/snapshot'))).res.json().data;
+  assert.equal(h.__searchCalls.length, 0, 'GET /api/snapshot 派了那一发 ⇒ 读路径不再是零发');
+
+  assert.deepEqual(Object.keys(frame.stars).sort(), Object.keys(viaGet.stars).sort(), '两种通路的 stars 必须同形');
+  assert.deepEqual(Object.keys(viaGet.stars).sort(), [
+    'allStars', 'headline', 'minRounds', 'missingCell', 'roundsAvailable', 'roundsPeakLabel', 'rows',
+    'sorts', 'starsAddedLabel', 'starsLabel', 'thin', 'thinNote', 'views',
+  ].sort(), 'stars 那一层的键表变了就是改了客户端的契约（客户端不猜键，缺一个键就是一块白屏）');
+  assert.deepEqual(Object.keys(viaGet.stars.allStars).sort(), ['error', 'hasData', 'note', 'ok', 'rows', 'statLine', 'transport']);
+
+  // search 表一行都没有：那一档给**空数组**而不是 undefined，并念那句「未开启」（出厂关着）
+  assert.deepEqual(viaGet.stars.allStars.rows, []);
+  assert.equal(viaGet.stars.allStars.hasData, false);
+  assert.equal(viaGet.stars.allStars.error, '');
+  assert.equal(viaGet.stars.allStars.statLine, STARS_QUOTA_OFF_NOTE, '开关关着却念"还没取回过"，等于让用户以为开了但坏了');
+  assert.equal(viaGet.stars.rows.length, 1, '榜史那一段照旧装配（全站高星关着不影响本地明星那一屏）');
+  h.dispose();
+});
+
+check('快照里的 stars 与直接调 starsView 同源（不许第二份真相），且候选吃的是 topN 切片后的那三榜', async () => {
+  const h = await mkApi({
+    prefs: { topN: 5 },
+    states: {
+      daily: stateRow('daily', Array.from({ length: 8 }, (_x, i) => crow(`a/${i + 1}`, i + 1, { stars: 1000 - i * 100 }))),
+      weekly: null, monthly: null,
+    },
+  });
+  await h.__stores.seen.touch({ repo: 'a/1', name: 'A/1', board: 'daily', at: 4000, rank: 3 });
+  await h.__stores.seen.touch({ repo: 'a/1', name: 'A/1', board: 'daily', at: 5000, rank: 1 });
+
+  const snap = (await call(h, get('/api/snapshot'))).res.json().data;
+  assert.deepEqual(snap.stars.rows.map((r) => r.repo), ['a/1', 'a/2', 'a/3', 'a/4', 'a/5'],
+    '屏上只有前五名 ⇒ 明星那一屏的候选只能是那五行（rank 6~8 在载荷里却在屏上没有，就是"界面显示 5 行、数着 8 行"）');
+  assert.ok(!snap.stars.rows.some((r) => ['a/6', 'a/7', 'a/8'].includes(r.repo)), '切片之后的榜没喂进 starsView');
+  assert.equal(snap.stars.rows[0].rounds, 2, '在榜轮数从观测史来（同轮三榜只 +1，跨两轮才 +2）');
+  assert.equal(snap.stars.rows[0].bestRank, 1, '峰值名次取历史最好（只降不升）');
+
+  // ★ 期望值由**同一个纯视图**现算，喂的是快照自己已经给出去的那三榜与那份偏好：
+  //   这条判据钉的是"装配层没有另拼一份原料"（比如漏了 prefs、拿 states 当 boards、自己补时刻）。
+  const expected = starsView({
+    seenRows: await h.__stores.seen.readAll(),
+    boards: snap.boards,
+    roundAt: snap.boards.daily.at,
+    prefs: snap.prefs,
+    search: await h.__stores.search.read(),
+    storageAvailable: true,
+  });
+  assert.deepEqual(snap.stars, expected, '快照里的 stars 与直接调 starsView 不同源 ⇒ 界面上那句话有了第二份出处');
+  h.dispose();
+});
+
+check('roundAt 取的是「最近一轮成功取回」而不是本地时钟：插件停摆三十天后，那一屏榜史照旧在屏上（数据没变，读数不许变）', async () => {
+  // ★ 时刻用**真实量级**的 epoch：拿 7777 这种小数字试，三十天前就负了，`numOr0` 把负数折成 0 ⇒
+  //   窗口判据两头都成立、变异照样绿（本轮变异 M4 的第一版就是这么漏过去的）。
+  const NOW = 1_800_000_000_000;
+  const stale = NOW - 30 * 24 * 3600 * 1000;
+  const h = await mkApi({
+    now: () => NOW,
+    states: { daily: stateRow('daily', [crow('a/1', 1)], { at: stale, bodyChangedAt: stale, lastFetchAt: stale }), weekly: null, monthly: null },
+  });
+  await h.__stores.seen.touch({ repo: 'z/old', name: 'Z/Old', board: 'daily', at: stale, rank: 2 });
+  const snap = (await call(h, get('/api/snapshot'))).res.json().data;
+  assert.ok(snap.stars.rows.some((r) => r.repo === 'z/old'),
+    '窗口按本地时钟算 ⇒ 停摆三十天后一屏榜史自己清空（那批行一个字没变，只是"现在几点"变了）');
+  assert.equal(snap.stars.rows.find((r) => r.repo === 'z/old').group, 'cooling');
+  assert.equal(snap.stars.rows.find((r) => r.repo === 'a/1').group, 'rising', '这一轮在榜、本机第一次见到 ⇒ 新星；回落与新星用的是同一个时刻，不是两套时钟');
+  h.dispose();
+});
+
+check('观测史那张表读不出（available 不是真）⇒ 那一屏念「存储不可用」那一句，而不是空表那句「还没跑过检查」', async () => {
+  const h = await mkApi({ seenStore: { available: false, readAll: async () => { throw new Error('storageDomain 掉了'); } } });
+  const snap = (await call(h, get('/api/snapshot'))).res.json().data;
+  assert.equal(snap.stars.headline, STARS_NO_STORE_NOTE, '能力边界 ①：装配层把"读失败"当"没数据"，界面就会说错原因');
+  assert.deepEqual(snap.stars.rows, []);
+  assert.ok(h.__warns.some((w) => w.includes('观测史')), '读失败要留一句可查的日志');
+  h.dispose();
+});
+
+check('那一发只挂轮次：带 at 的检查事件后派满 SEARCH_MAX_PER_ROUND 发就收口；换轮重新允许；装配层恒给它零个实参（令牌不在这一层）', async () => {
+  const h = await mkApi({ prefs: { allStarsEnabled: true } });
+  for (const fn of h.__fanout) fn({ type: 'update', at: 1234 });
+  await flush(20);
+  assert.equal(h.__searchCalls.length, SEARCH_MAX_PER_ROUND, `一轮检查应当发 ${SEARCH_MAX_PER_ROUND} 发`);
+  for (const fn of h.__fanout) fn({ type: 'update', at: 1234 });
+  await flush(20);
+  assert.equal(h.__searchCalls.length, SEARCH_MAX_PER_ROUND, '同一轮的第二次触发穿过了预算闸门 ⇒ 每轮 1 发变成了每事件 1 发');
+  for (const fn of h.__fanout) fn({ type: 'update', at: 2345 });
+  await flush(20);
+  assert.equal(h.__searchCalls.length, SEARCH_MAX_PER_ROUND * 2, '换了轮次必须重新给预算');
+  assert.ok(h.__searchCalls.every((args) => args.length === 0),
+    '装配层给那一发递了实参 ⇒ 令牌会从这一层流出去（api 门面从头到尾不该认识它）');
+
+  const row = await h.__stores.search.read();
+  assert.equal(row.ok, true);
+  assert.deepEqual(row.rows.map((r) => r.repo), ['freecodecamp/freecodecamp']);
+  assert.equal(h.__facility.rowCount('gh_trending', 'search'), 1, '那一档恒一行：覆盖写，不追加（append 会让界面上的"上一批"变成历史堆）');
+  h.dispose();
+});
+
+check('不带 at 的 update（保存偏好那类）一发不派、一帧不追，并留一句可查的 warn', async () => {
+  const h = await mkApi({ prefs: { allStarsEnabled: true } });
+  const res = makeRes();
+  await h(makeReq({ method: 'GET', url: `${ROUTE_PREFIX}/api/stream` }), res);
+  await flush(5);
+  const before = updateFrames(res.writes.join(''));
+  for (const fn of h.__fanout) fn({ type: 'update' });
+  await flush(20);
+  assert.equal(h.__searchCalls.length, 0, '保存一次设置就多打一发 search ⇒ 那是白烧额度，不是轮次');
+  assert.ok(h.__warns.some((w) => w.includes('轮次')), '跳过要留一句（用户开了却没见数据，那句话得能查到底是哪一轮没认出来）');
+  assert.equal(updateFrames(res.writes.join('')) - before, 1, '一件轮次后的活都没干成 ⇒ 载荷没变，不该追第二帧');
+  h.dispose();
+});
+
+/* --------- 10-09 改判：开启即拉（「关 → 开」那一趟当场发一发，不再让人等到下一轮检查） --------- */
+
+check('开启即拉：库里 false → 递来 true 的那一趟当场发一发，回执回来时那一批已经在库里、也在快照里', async () => {
+  // 延迟桩：把「回执之前发完」和「回执之后自己发」这两种接法分开 —— 不延迟的话 5ms 的 flush 会把差别圆掉。
+  const slow = async () => { await flush(25); return searchOk(); };
+  const h = await mkApi({ searchFetcher: slow });
+  assert.equal(h.__searchCalls.length, 0, '前提：装配完还没出过网');
+  const sres = makeRes();
+  await h(get('/api/stream'), sres);
+  await flush(5);
+  const base = updateFrames(sres.writes.join(''));
+  const { res } = await call(h, post('/api/prefs', { allStarsEnabled: true }));
+  assert.equal(res.statusCode, 200);
+  assert.equal(h.__searchCalls.length, SEARCH_MAX_PER_ROUND,
+    `点「开」的那一趟应当当场派 ${SEARCH_MAX_PER_ROUND} 发（用户裁定 10-09：开启的时候默认拉取一次，不是等下一轮检查）`);
+  const row = await h.__stores.search.read();
+  assert.equal(row && row.ok, true, '回执都回来了库里还没有那一批 ⇒ 这一发其实是在后台飘（"点完了但结果在别处"）');
+  assert.deepEqual(row.rows.map((r) => r.repo), ['freecodecamp/freecodecamp']);
+  assert.equal(updateFrames(sres.writes.join('')) - base, 1,
+    '发过就追帧：savePrefs 的回执只并 prefs 那一格，那一批行不追帧就上不了屏（面板停在"已开启、没取回"）');
+  const snap = (await call(h, get('/api/snapshot'))).res.json().data;
+  assert.equal(snap.prefs.allStarsEnabled, true);
+  assert.equal(snap.stars.allStars.hasData, true);
+  assert.equal(snap.stars.allStars.ok, true);
+  assert.equal(snap.stars.allStars.statLine,
+    starsQuotaLine({ at: 7777, left: 9, limit: 10, resetAt: 1791518294000, authed: false }),
+    '那一发取回后屏上念的额度句仍只出自 domain 的 starsQuotaLine（装配层不自己拼）');
+  h.dispose();
+});
+
+check('开启即拉认的是「转换」：已经开着再存 true（连点、改别的键时顺带带上）一发不派 —— 白烧额度那条律只是收窄，没被删', async () => {
+  const h = await mkApi({ prefs: { allStarsEnabled: true } });
+  await call(h, post('/api/prefs', { allStarsEnabled: true }));
+  assert.equal(h.__searchCalls.length, 0, '库里本来就开着 ⇒ 这一趟不是"开启"，不该再花一发');
+  await call(h, post('/api/prefs', { topN: 12, allStarsEnabled: true }));
+  assert.equal(h.__searchCalls.length, 0, '顺带把那一档一起 POST 过来 ⇒ 转换判据吃的是库里的旧值，不是请求里有没有这个键');
+  assert.equal((await h.__stores.prefs.read()).topN, 12, '前提：这一趟真存进了库（不是因为 400 才没发）');
+  h.dispose();
+});
+
+check('关掉那一趟与没碰那一档的保存都不派；出厂关着时任何保存都不派（装了这一路不等于替用户出网）', async () => {
+  const on = await mkApi({ prefs: { allStarsEnabled: true } });
+  await call(on, post('/api/prefs', { allStarsEnabled: false }));
+  assert.equal(on.__searchCalls.length, 0, '「开 → 关」不许发（关掉不删库里已攒的那一批，也不该顺手取一次）');
+  await call(on, post('/api/prefs', { topN: 12 }));
+  assert.equal(on.__searchCalls.length, 0, '没带 allStarsEnabled 的保存不该派');
+  on.dispose();
+  const off = await mkApi();
+  await call(off, post('/api/prefs', { intervalMin: 30 }));
+  assert.equal(off.__searchCalls.length, 0, '出厂关着 ⇒ 保存别的偏好也不该让这一路出网');
+  off.dispose();
+});
+
+check('开启那一发坏了也要当场看得见：回执 200、库里落坏轮、载荷那三格（hasData/ok/error）把故障说出嘴', async () => {
+  const h = await mkApi({ searchFetcher: async () => searchBad() });
+  const sres = makeRes();
+  await h(get('/api/stream'), sres);
+  await flush(5);
+  const base = updateFrames(sres.writes.join(''));
+  const { res } = await call(h, post('/api/prefs', { allStarsEnabled: true }));
+  assert.equal(res.statusCode, 200, '那一发失败是出网的事，不该把"保存偏好"本身回成 5xx');
+  assert.equal(updateFrames(sres.writes.join('')) - base, 1,
+    '坏轮 sent>0 也要追帧：那一轮的 ok/error/lastFetchAt 三格本来就是要让界面看见的变化（藏着等于没出口）');
+  const row = await h.__stores.search.read();
+  assert.equal(row.ok, false);
+  assert.equal(row.error, '限额用尽（403，重置于 2026/10/9 04:38:14）', '原样回执，不过 REPO_ERROR_LABELS（两套池子那条）');
+  assert.equal(row.at, 0, '没有上一批可冻结时 at 落 0 ⇒ 界面上那句额度还念"等待"，不会编一个"上次取回"');
+  const snap = (await call(h, get('/api/snapshot'))).res.json().data;
+  assert.equal(snap.stars.allStars.hasData, true, '落过库（坏轮那一条）就说"落过"');
+  assert.equal(snap.stars.allStars.ok, false);
+  assert.equal(snap.stars.allStars.error, row.error);
+  h.dispose();
+});
+
+check('开启即拉与检查轮各花各的预算：点完「开」再走一轮检查 ⇒ 两发都派得出（互不侵占），同一趟连点两次只有一发', async () => {
+  const h = await mkApi();
+  await call(h, post('/api/prefs', { allStarsEnabled: true }));
+  assert.equal(h.__searchCalls.length, SEARCH_MAX_PER_ROUND, '开启那一趟派了一发');
+  await call(h, post('/api/prefs', { allStarsEnabled: true }));
+  assert.equal(h.__searchCalls.length, SEARCH_MAX_PER_ROUND, '同一毫秒内的第二次「开」（转换已吃过）不再派 ⇒ 连点不叠发');
+  for (const fn of h.__fanout) fn({ type: 'update', at: 4321 });
+  await flush(20);
+  assert.equal(h.__searchCalls.length, SEARCH_MAX_PER_ROUND * 2,
+    '检查轮那一发不能被开启那一趟占掉（占了就等于"点完开后这一轮不刷新了"，而那一轮的预算本来就独立）');
+  h.dispose();
+});
+
+check('★ 间隔内已经拉取过就不再拉（10-09 第二条裁定）：库里五分钟前刚成功取回 ⇒ 点「开」0 发、不追帧，而屏上那一批照旧在载荷里', async () => {
+  const T0 = 1_700_000_000_000, MIN = 60_000;
+  const h = await mkApi({ now: () => T0 });
+  await h.__stores.search.write({
+    at: T0 - 5 * MIN, lastFetchAt: T0 - 5 * MIN, ok: true, error: '', transport: false, rows: [SEARCH_ROW],
+    rateLeft: 9, rateLimit: 10, rateResetAt: 1791518294000, rateAuthed: false,
+  });
+  const sres = makeRes();
+  await h(get('/api/stream'), sres);
+  await flush(5);
+  const base = updateFrames(sres.writes.join(''));
+  const { res } = await call(h, post('/api/prefs', { allStarsEnabled: true }));
+  assert.equal(res.statusCode, 200, '挡下也是保存成功 —— 那一档现在确实是开着的');
+  assert.equal(h.__searchCalls.length, 0, `出厂间隔 60 分、上一发五分钟前成功 ⇒ 这一趟不该再烧一发（用户裁定 10-09 第二条）`);
+  assert.equal(updateFrames(sres.writes.join('')) - base, 0,
+    '一发没派就不追第二帧：库里一个字没变，而"开着"那一位已经跟着同一次回执上屏了（追帧等于为一个没发生的变化推帧）');
+  const row = await h.__stores.search.read();
+  assert.equal(row.at, T0 - 5 * MIN, '挡下的那一趟不写库（连 lastFetchAt 都不许推进，否则"上一次发起"会说假话）');
+  const snap = (await call(h, get('/api/snapshot'))).res.json().data;
+  assert.equal(snap.prefs.allStarsEnabled, true, '开关位仍随回执上屏（分段器那枚不该还灰着）');
+  assert.equal(snap.stars.allStars.rows.length, 1, '不发不等于没东西看：本机那一批就在载荷里，屏上直接端上来');
+  assert.equal(snap.stars.allStars.hasData, true);
+  h.dispose();
+});
+
+check('★ 窗口吃的是生效偏好那一格，装配层不自己数分钟：同一份库（61 分钟前）在 60 档发、把间隔拨到 24 小时就不发', async () => {
+  const T0 = 1_700_000_000_000, MIN = 60_000;
+  const seed = async (h) => h.__stores.search.write({
+    at: T0 - 61 * MIN, lastFetchAt: T0 - 61 * MIN, ok: true, error: '', transport: false, rows: [SEARCH_ROW],
+    rateLeft: 9, rateLimit: 10, rateResetAt: 0, rateAuthed: false,
+  });
+  const a = await mkApi({ now: () => T0 });
+  await seed(a);
+  await call(a, post('/api/prefs', { allStarsEnabled: true }));
+  assert.equal(a.__searchCalls.length, SEARCH_MAX_PER_ROUND, '61 分钟 > 出厂 60 分钟的窗口 ⇒ 过期了，点开发');
+  a.dispose();
+
+  const b = await mkApi({ now: () => T0 });
+  await call(b, post('/api/prefs', { intervalMin: 1440 }));
+  assert.equal(b.__searchCalls.length, 0, '前提：关着时改间隔不该让这一路出网');
+  await seed(b);
+  await call(b, post('/api/prefs', { allStarsEnabled: true }));
+  assert.equal(b.__searchCalls.length, 0, '同一份库、窗口换成 24 小时 ⇒ 挡住（窗口只有一个来源：设置页那一格，门面不许再判一次）');
+  assert.equal((await b.__stores.prefs.read()).intervalMin, 1440, '前提：那一格真存进了库并按生效值递给 runner（不是 400 才没发）');
+  b.dispose();
+});
+
+check('发过就追第二帧：成功轮把那一批带进载荷，坏轮把故障那三格带进载荷（把故障藏一轮等于没出口）', async () => {
+  const framesOf = async (fetcher) => {
+    const h = await mkApi({ prefs: { allStarsEnabled: true }, searchFetcher: fetcher });
+    const res = makeRes();
+    await h(makeReq({ method: 'GET', url: `${ROUTE_PREFIX}/api/stream` }), res);
+    await flush(5);
+    const base = updateFrames(res.writes.join(''));
+    for (const fn of h.__fanout) fn({ type: 'update', at: 1234 });
+    await flush(20);
+    const raw = res.writes.join('');
+    const frames = updateFrames(raw) - base;
+    return { frames, snap: frames > 0 ? frameAt(raw, base + frames) : null, h };
+  };
+
+  const good = await framesOf(async () => searchOk());
+  assert.equal(good.frames, 2, '成功轮取回了一批却不追帧 ⇒ 界面要停到下一轮才看得见');
+  assert.equal(good.snap.stars.allStars.hasData, true);
+  assert.equal(good.snap.stars.allStars.ok, true);
+  assert.deepEqual(good.snap.stars.allStars.rows.map((r) => r.repo), ['freecodecamp/freecodecamp']);
+  assert.equal(good.snap.stars.allStars.error, '');
+  assert.equal(good.snap.stars.allStars.statLine, starsQuotaLine({
+    at: 7777, left: 9, limit: 10, resetAt: 1791518294000, authed: false,
+  }), '额度那一句的出处只能是 domain 的 starsQuotaLine（装配层自己拼就是第二份真相）');
+  good.h.dispose();
+
+  const bad = await framesOf(async () => searchBad());
+  assert.equal(bad.frames, 2, '坏轮 sent>0 却不追帧 ⇒ 那一轮的 ok/error/lastFetchAt 本来就是要让界面看见的变化');
+  assert.equal(bad.snap.stars.allStars.ok, false);
+  assert.equal(bad.snap.stars.allStars.transport, false);
+  assert.equal(bad.snap.stars.allStars.error, '限额用尽（403，重置于 2026/10/9 04:38:14）', '界面念的是落库那一份原样回执，不许过 REPO_ERROR_LABELS（两套池子，那句 60 次/小时在 search 这一档是假话）');
+  assert.ok(!bad.snap.stars.allStars.error.includes('60'), '故障句里混进了 REST core 的额度数字');
+  assert.deepEqual(bad.snap.stars.allStars.rows, []);
+  assert.equal(bad.snap.stars.allStars.hasData, true, '落过库（坏轮那一条）就说"落过"，与"这一轮成没成"是两件事');
+  bad.h.dispose();
+
+  const off = await mkApi();
+  const offRes = makeRes();
+  await off(makeReq({ method: 'GET', url: `${ROUTE_PREFIX}/api/stream` }), offRes);
+  await flush(5);
+  const offBase = updateFrames(offRes.writes.join(''));
+  for (const fn of off.__fanout) fn({ type: 'update', at: 1234 });
+  await flush(20);
+  assert.equal(off.__searchCalls.length, 0, '出厂关着却派了一发 ⇒ 装了就替用户出网');
+  assert.equal(updateFrames(offRes.writes.join('')) - offBase, 1, '一发都没派还追帧 ⇒ 面板白刷一次');
+  off.dispose();
+});
+
+check('偏好里每一个布尔开关都吃严格布尔（清单派生自 DEFAULT_PREFS：新增一格忘了过闸门会被这条逮住）', async () => {
+  const boolKeys = Object.entries(DEFAULT_PREFS).filter(([, v]) => typeof v === 'boolean').map(([k]) => k);
+  assert.ok(boolKeys.includes('allStarsEnabled'), '全站高星那一档不是布尔偏好 ⇒ 这一档的开关口径要重写');
+  assert.ok(boolKeys.length >= 3, `派生出的布尔开关只有 ${boolKeys.join(', ')} —— 比现译两档还少，说明 DEFAULT_PREFS 读法变了，这条判据会空转`);
+  for (const k of boolKeys) {
+    for (const dirty of ['true', 'false', 1, 0, 'on', {}, []]) {
+      const h = await mkApi();
+      const { res } = await call(h, post('/api/prefs', { [k]: dirty }));
+      assert.equal(res.statusCode, 400, `${k} 收到 ${JSON.stringify(dirty)} 居然过了闸门`);
+      assert.equal((await h.__stores.prefs.read())[k], DEFAULT_PREFS[k], `${k} 被拒的那一发把库里原有的值改掉了`);
+      h.dispose();
+    }
+    const flipped = !DEFAULT_PREFS[k];
+    const h = await mkApi();
+    const ok = await call(h, post('/api/prefs', { [k]: flipped }));
+    assert.equal(ok.res.statusCode, 200, `${k} 的合法布尔被拒了 ⇒ 那一格永远存不进库`);
+    assert.equal((await h.__stores.prefs.read())[k], flipped, `${k} 过了闸门却没落库（界面上那个开关下次打开会弹回原值）`);
+    const snap = (await call(h, get('/api/snapshot'))).res.json().data;
+    assert.equal(snap.prefs[k], flipped, '落库了却没进快照 ⇒ 那一档的界面状态是上一帧的');
+    h.dispose();
+  }
 });
 
 check('snapshotOf：跨榜同现是三榜交叉算出来的，不再发请求', async () => {

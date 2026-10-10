@@ -23,7 +23,7 @@
  */
 import { createApiHandler, ROUTE_PREFIX, GLOBAL_KEY } from './lib/api.js';
 import { createCaps } from './lib/caps.js';
-import { createStateStore, createEventStore, createPrefsStore, createSeenStore, createRepoCacheStore, createTransStore } from './lib/stores.js';
+import { createStateStore, createEventStore, createPrefsStore, createSeenStore, createRepoCacheStore, createTransStore, createSearchStore } from './lib/stores.js';
 import { createCheckService } from './lib/check.js';
 import {
   BOARDS, BOARD_LABELS, BOARD_ADDED_LABELS, TRENDING_SOURCE_NOTE, LANG_CHECK,
@@ -35,7 +35,7 @@ import {
 } from './lib/domain.js';
 import { normalizeLanguage } from './lib/services/gh.js';
 import { createNetTransport, parseProxyUrl } from './lib/services/net.js';
-import { createRepoDetailService } from './lib/services/repo.js';
+import { createRepoDetailService, createSearchFetcher } from './lib/services/repo.js';
 import { createLlmTranslator } from './lib/services/llm.js';
 import { createWebTranslator } from './lib/services/web-translate.js';
 
@@ -141,6 +141,8 @@ export function apply(ctx, config = {}) {
   const prefsStore = createPrefsStore({ getFacility, logger: ctx.logger });
   const repoStore = createRepoCacheStore({ getFacility, logger: ctx.logger });
   const transStore = createTransStore({ getFacility, logger: ctx.logger });
+  // ★ 第七张表（第二十三轮）：那一档最多一行（key 恒 `batch`），坏轮冻结的读法与 state 表同一条（理由见 domain 的 searchRecord）。
+  const searchStore = createSearchStore({ getFacility, logger: ctx.logger });
 
   let prefsView = {
     intervalMin: resolved.intervalMin,
@@ -212,8 +214,19 @@ export function apply(ctx, config = {}) {
     now: () => Date.now(),
   });
 
-  /* ---- 4. 检查服务 + 事件扇出 ---- */
-  const fanout = new Set();
+  /* ---- 3.9 全站高星那一发（第二十三轮，§0 本轮 ⑤：允许清单里**唯一新增**的一路出网）----
+   * `createSearchFetcher()` 把令牌与传输层绑成一颗**无参**函数再交给 api 门面：`Authorization` 只造在 `lib/services/repo.js`
+   * 那条私有 `get()` 里，编排那一路（`lib/services/all-stars.js`）连「令牌」这个键名都不许出现（hc-21 按键名扫文件）。
+   * ★ 走的是同一条 `net.fetch`：代理仲裁 / 超时 / 报错口径与那三榜 + 详情一致，不在这里另立一套出网。
+   * ★ 出厂 `allStarsEnabled=false` ⇒ 没人在设置页开这一档，这一颗函数一次都不会被调。 */
+  const searchFetcher = createSearchFetcher({
+    fetchFn: net.fetch,
+    logger: ctx.logger,
+    now: () => Date.now(),
+    getGhToken: () => getPrefs().ghToken,
+  });
+
+  /* ---- 4. 检查服务 + 事件扇出 ---- */  const fanout = new Set();
   const check = createCheckService({
     getPrefs,
     stateStore,
@@ -249,6 +262,11 @@ export function apply(ctx, config = {}) {
     //   选路与开关判定分两处取就会漂（库里已改、视图还没 reload 的那几百毫秒里，界面上会出现"选了百度却按免费档判"）。
     transStore,
     getPrefs,
+    // ★ 第二十三轮（明星页签）那三格：观测史整表（本地那一屏的轮数与名次）、那一批全站高星、
+    //   以及上面 3.9 那颗**无参**的 search 函数（闸门与每轮预算在 `lib/services/all-stars.js`，令牌不在它们任何一格里）。
+    seenStore,
+    searchStore,
+    searchFetcher,
     repoService,
     translator,
     webTranslator,
@@ -268,7 +286,7 @@ export function apply(ctx, config = {}) {
     try { translator.dispose(); } catch (e) { ctx.logger?.warn?.(`[gh-trending] 释放现译服务失败：${e?.message ?? e}`); }
     // 第九轮那两档（免费 / 官方）同理：清在途表 ⇒ 之后不再往翻译域名发一发
     try { webTranslator.dispose(); } catch (e) { ctx.logger?.warn?.(`[gh-trending] 释放翻译接口服务失败：${e?.message ?? e}`); }
-    for (const s of [stateStore, eventStore, seenStore, prefsStore, repoStore, transStore]) {
+    for (const s of [stateStore, eventStore, seenStore, prefsStore, repoStore, transStore, searchStore]) {
       Promise.resolve(s.close?.()).catch((e) => ctx.logger?.warn?.(`[gh-trending] 关闭存储句柄失败：${e?.message ?? e}`));
     }
   }

@@ -11,8 +11,9 @@
 // 不自动弹提示层：错误与状态一律就地落卡（.gt-notice）。
 // 唯一的浮层是**用户自己点出来的**仓库详情对话框（点仓库名 → 中文解释），它不自动出现、不抢焦点以外的东西。
 //
-// 页签：总览 / 日榜 / 周榜 / 月榜 / 变化记录 / 设置（与 modelwatch 同形：一屏一件事，
-// 段与段不再靠一路滚；三档榜从「卡内分段器」升成「三个页签」，卡内不再套一层切换）。
+// 页签：总览 / 日榜 / 周榜 / 月榜 / 明星仓库 / 变化记录 / 设置（与 modelwatch 同形：一屏一件事，
+// 段与段不再靠一路滚；三档榜从「卡内分段器」升成「三个页签」，卡内不再套一层切换；
+// 明星那一屏（第二十三轮）的原料全在载荷 `stars` 那一格里 ⇒ 打开这一签不出网，换档与排序都只是本地重排）。
 //    CSS 模板串里注释与选择器都不许出现反引号。
 
 window.__ModuleLoader__.load({
@@ -79,6 +80,10 @@ window.__ModuleLoader__.load({
 .gt-card-t{font-weight:600;font-size:13px;white-space:nowrap}
 .gt-card-n{margin-left:auto;color:var(--gt-muted);font-size:11px;font-variant-numeric:tabular-nums;white-space:nowrap}
 .gt-card-b{padding:12px 14px;display:flex;flex-direction:column;gap:10px;min-width:0}
+/* 明星那一屏（形状 B）的卡体首行：排序分段器与统计那一句从卡头挪到这里。
+   卡头只留三件（标题 / 视图分段器 / 那一档的开关）—— 控件全挤在卡头时，窄面板会把卡头从 47px 顶到 81~165px（4~5 行），
+   首屏就只剩两三行表（原型两版实测，这是形状 A 被否掉的主因）。 */
+.gt-bar{display:flex;align-items:center;gap:10px;flex-wrap:wrap;min-width:0;flex:none}
 .gt-note{margin:0;padding:8px 14px 10px;border-top:1px solid var(--gt-line);color:var(--gt-faint);font-size:11px}
 .gt-panel{display:flex;flex-direction:column;gap:12px;min-width:0;flex:1;min-height:0;overflow-y:auto}
 /* ⛔ 滚动容器的直接子一律不许收缩。panel 自己会滚之后，子项默认的 flex-shrink:1 就变成一条没人要的
@@ -117,6 +122,9 @@ window.__ModuleLoader__.load({
 .gt-tbl tbody tr:last-child td{border-bottom:none}
 .gt-tbl tbody tr:hover td{background:var(--gt-hover)}
 .gt-tbl tbody tr.gt-new td{background:#f7fbff}
+/* 「在榜」那一列的证据深度不够 ⇒ 整列置灰而不是藏掉（藏了之后它哪天攒够会凭空长出来，读者不知道它去哪了）。
+   斜纹底 + 弱字色只说一件事：这一格"还没到"，不是"这里是 0"。 */
+.gt-tbl td.off,.gt-tbl th.off{color:var(--gt-faint);background:repeating-linear-gradient(135deg,#fafafb,#fafafb 6px,#f4f4f5 6px,#f4f4f5 12px)}
 .gt-rank{display:inline-flex;align-items:center;justify-content:center;width:22px;height:22px;border-radius:8px;
   font-size:11px;font-weight:700;font-variant-numeric:tabular-nums;flex:0 0 auto}
 /* 前三名金/银/铜，其余中性 —— 三档色值与兄弟插件 modelwatch 的 .mw-rank-1/2/3 逐字相同（观感口径对表）。 */
@@ -132,6 +140,10 @@ window.__ModuleLoader__.load({
 .gt-up{color:var(--gt-ok)}
 .gt-down{color:var(--gt-err)}
 .gt-flat{color:var(--gt-faint)}
+/* 形状 B 的两个"并进"：今日新增并进「累计 ★」那一格（小字跟在总数后面）、峰值名次并进「在榜」那一格。
+   九个概念、七列 —— 这是本轮刻意的减法（九列那一版把首屏吃成两三行表）。 */
+.gt-delta{margin-left:6px;font-size:11px}
+.gt-faint2{color:var(--gt-faint);margin-left:5px}
 .gt-tag{display:inline-block;margin-left:6px;padding:0 6px;border-radius:999px;border:1px solid var(--gt-line2);
   background:var(--gt-soft);color:var(--gt-muted);font-size:10px;white-space:nowrap}
 .gt-empty{margin:0;padding:10px 14px;color:var(--gt-muted);font-size:12px}
@@ -192,6 +204,10 @@ window.__ModuleLoader__.load({
 .gt-seg button{border:none;background:transparent;color:var(--gt-muted);font-family:inherit;font-size:12px;
   padding:3px 10px;border-radius:6px;cursor:pointer}
 .gt-seg button.on{background:var(--gt-fg);color:var(--gt-card);font-weight:500}
+/* 分段器里"摆着但按不动"那一枚（明星那一屏未开启的全站高星档）：灰纹 + not-allowed，把"还没到"说成"还没到"，不藏（同 §7.6 那条 ready:false 开关照摆的偏好）。
+   ★ 必须排除 .on：设置卡的开关行与档位分段器都给"当前那枚"挂 disabled（点了没改动），两条同特异度时后写的赢 ⇒
+     少了 :not(.on) 这一道闸，选中态的黑底会被灰纹顶掉，设置页整页的当前档看不出选中。 */
+.gt-seg button:disabled:not(.on){color:var(--gt-faint);cursor:not-allowed;background:repeating-linear-gradient(135deg,#fafafb,#fafafb 5px,#f3f3f4 5px,#f3f3f4 10px)}
 .gt-btn{font-family:inherit;font-size:12px;border-radius:8px;cursor:pointer;border:1px solid var(--gt-line2);
   background:var(--gt-card);color:var(--gt-fg);padding:4px 12px}
 .gt-btn:hover:not(:disabled){background:var(--gt-hover)}
@@ -301,6 +317,34 @@ window.__ModuleLoader__.load({
     function kindLabel(kind) {
       const map = cfg().eventKindLabels || {};
       return map[kind] || kind;
+    }
+    /**
+     * 「累计 ★（今日新增）」那一格里的小字：宿主给的 `added` 有三种样子，界面各说各的（§8.8 第 2 条）。
+     * ★ `null` 与 `0` 是两件事 —— 「这一轮它不在日榜」念缺位格，「今天没涨」才念 +0；
+     *   把缺位演成 0 就是拿"没数"冒充"数是 0"，与榜面那条「0 与缺位都不给徽标」同族。
+     */
+    function addedCell(added, missing) {
+      const v = Number(added);
+      if (added === null || added === undefined || !Number.isFinite(v)) return { text: missing, cls: 'gt-flat' };
+      if (v > 0) return { text: `+${fmtCount(v)}`, cls: 'gt-up' };
+      if (v < 0) return { text: `−${fmtCount(-v)}`, cls: 'gt-down' };
+      return { text: '+0', cls: 'gt-flat' };
+    }
+    /**
+     * 明星那一屏在**已到手**的那批里筛与重排（§7.7：换档与排序都是本地动作 —— 不发请求、不写 prefs、不触发检查）。
+     * ★ 载荷恒按 `stars` 降序预先排好（宿主那份 `sorts` 只是名单，行序不在这里再问一次）；
+     *   缺位的读数（回落行的 `stars`、不在日榜的 `added`）按 `-1` 参与比较 ⇒ 垫底，与 `0` 分开。
+     */
+    function starsPick(rows, view, sort, allRows) {
+      if (view === 'allStars') {
+        return [...(allRows || [])].sort((a, b) => (b.stars ?? -1) - (a.stars ?? -1) || String(a.repo).localeCompare(String(b.repo)));
+      }
+      const list = (rows || []).filter((r) => view === 'all' || r.group === view);
+      return [...list].sort((a, b) => {
+        if (sort === 'added') return (b.added ?? -1) - (a.added ?? -1) || (b.stars ?? -1) - (a.stars ?? -1);
+        if (sort === 'rounds') return (b.rounds ?? -1) - (a.rounds ?? -1) || (b.stars ?? -1) - (a.stars ?? -1);
+        return (b.stars ?? -1) - (a.stars ?? -1);
+      });
     }
     /**
      * 仓库名的链接属性：href 保留是给中键 / 右键「新标签页打开」留的活路，
@@ -469,10 +513,15 @@ window.__ModuleLoader__.load({
           notices.length ? notices : null));
     }
 
-    function RankBadge({ rank }) {
+    /**
+     * 名次徽标：前三名金/银/铜，其余中性（色值与兄弟插件对表，第十四轮口径）。
+     * ★ `medal` 那一档由调用方给：明星那一屏的 `#` 是**这一屏当前排序下的第几行**，
+     *   按「在榜轮数」排时前三行不等于「星数前三」⇒ 那里只摆中性档，别把奖牌色挂在一名没依据的位次上。
+     */
+    function RankBadge({ rank, medal = true }) {
       const n = Number(rank);
-      const medal = Number.isFinite(n) && n >= 1 && n <= 3;
-      return h('span', { className: medal ? `gt-rank gt-rank-${n}` : 'gt-rank gt-rank-n', title: `第 ${rank} 名` }, String(rank));
+      const show = medal === true && Number.isFinite(n) && n >= 1 && n <= 3;
+      return h('span', { className: show ? `gt-rank gt-rank-${n}` : 'gt-rank gt-rank-n', title: `第 ${rank} 名` }, String(rank));
     }
 
     /** 榜单表：一榜一页签，卡内不再套一层分段器（页签本身就是切换器）。 */
@@ -543,6 +592,106 @@ window.__ModuleLoader__.load({
                 }))))
             : null),
         h('p', { className: 'gt-note' }, snap?.sourceNote || '来源文案未就位'));
+    }
+
+    /**
+     * 明星仓库那一屏（§7.7 形状 B，第二十三轮）：原料**全部来自载荷** `stars` 那一格 ⇒ 渲染期零请求、打开这一签不出网。
+     * 界面只做三件事：按 `stars.views` / `stars.sorts` 摆分段器、在已到手的那批里筛与重排、把宿主算好的整句原样搬上屏。
+     * ★ 不数条、不拼句、不判档：`thin` / `group` / `headline` / `statLine` / `note` / `missingCell` 全是宿主判好的那一份。
+     * ★ 列集跟着视图收：`全站高星` 那一档只有六列（那边没有「轮」与「今日新增」的概念，摆出来就是把「被我抓过」说成「在榜过」）。
+     */
+    function StarsCard({ snap, saving, onRepo, onSave }) {
+      const s = snap?.stars || null;
+      const as = s?.allStars || {};
+      const views = s?.views || [];
+      const sorts = s?.sorts || [];
+      const missing = s?.missingCell || '';
+      const enabled = snap?.prefs?.allStarsEnabled === true;
+      const [view, setView] = useState(views[0]?.id || 'all');
+      const [sort, setSort] = useState(sorts[0]?.id || 'stars');
+      const zh = snap?.descZh || { hits: {}, heads: {}, liveNote: '' };
+      const hitOf = (repo) => zh.hits?.[repo] || null;
+
+      function toggleAllStars() {
+        const next = !enabled;
+        onSave({ allStarsEnabled: next });
+        // ★ 开启 ≠ 跳档（§0 本轮 ⑧：改的是一个数据源的开关，不是切屏，自动跳走会让人以为点了个视图按钮）。
+        //   反过来"关掉"时那一枚已经 disabled，人还停在那一档就没有出口 ⇒ 只有这一趟把视图送回名单第一档（行仍在库里，关掉不删）。
+        if (!next && view === 'allStars') setView(views[0]?.id || 'all');
+      }
+
+      if (!s) {
+        return h('section', { className: 'gt-card' },
+          h('div', { className: 'gt-card-h' }, h('span', { className: 'gt-card-t' }, '明星仓库')),
+          h('div', { className: 'gt-card-b' },
+            h('p', { className: 'gt-empty' }, '等待首帧：这一屏读的是本机攒下的榜史（三榜行 + 观测史），不发请求。')));
+      }
+
+      const isAll = view === 'allStars';
+      const thin = s.thin === true;
+      const rows = starsPick(s.rows, view, sort, as.rows);
+      const countLine = isAll ? (as.statLine || '') : (s.headline || '');
+      // 列宽律与榜面同一条：# 与三个数值列拿死数、唯一"读得出内容"的那列（描述）吃余量、末尾兜底列宽 0。
+      const colProps = isAll
+        ? [{ style: { width: 46 } }, { className: 'gt-col-repo' }, { className: 'gt-col-desc' }, { style: { width: 112 } }, { style: { width: 64 } }, { className: 'gt-tail' }]
+        : [{ style: { width: 46 } }, { className: 'gt-col-repo' }, { className: 'gt-col-desc' }, { style: { width: 112 } }, { style: { width: 132 } }, { style: { width: 104 } }, { className: 'gt-tail' }];
+      const headCells = isAll
+        ? [['gt-r', '#'], ['', '仓库'], ['', '描述'], ['', '语言'], ['gt-r', s.starsLabel], ['gt-tail', '']]
+        : [['gt-r', '#'], ['', '仓库'], ['', '描述'], ['', '语言'], ['gt-r', s.starsAddedLabel],
+            [`gt-r${thin ? ' off' : ''}`, s.roundsPeakLabel], ['gt-tail', '']];
+      const notices = [
+        // §1 那一句「上一批照常显示并挂一句故障」的落点：故障说在前头，行照旧在屏上
+        as.hasData === true && as.ok !== true
+          ? h('div', { key: 'err', className: 'gt-notice gt-notice-err' }, `全站高星那一档本轮没取回：${as.error || '原因未给出'}`) : null,
+        thin && !isAll ? h('div', { key: 'thin', className: 'gt-notice' }, s.thinNote) : null,
+        !enabled || isAll ? h('div', { key: 'note', className: 'gt-notice' }, as.note) : null,
+      ].filter(Boolean);
+      return h('section', { className: 'gt-card' },
+        h('div', { className: 'gt-card-h' },
+          h('span', { className: 'gt-card-t' }, '明星仓库'),
+          views.length
+            ? h('span', { className: 'gt-seg' }, views.map((o) => h('button', {
+                key: o.id, className: view === o.id ? 'on' : '', disabled: o.disabled === true,
+                onClick: () => setView(o.id),
+              }, o.label)))
+            : null,
+          h('button', { className: 'gt-btn', disabled: saving === true, onClick: toggleAllStars },
+            enabled ? '关掉那一档' : '开启那一档')),
+        h('div', { className: 'gt-card-b' },
+          h('div', { className: 'gt-bar' },
+            isAll || !sorts.length
+              ? null
+              : h('span', { className: 'gt-seg' }, sorts.map((o) => h('button', {
+                  key: o.id, className: sort === o.id ? 'on' : '', onClick: () => setSort(o.id),
+                }, o.label))),
+            countLine ? h('span', { className: 'gt-card-n' }, countLine) : null),
+          notices.length ? notices : null,
+          h('div', { className: 'gt-scroll' }, h('table', { className: 'gt-tbl' },
+            h('colgroup', null, colProps.map((p, i) => h('col', { key: i, ...p }))),
+            h('thead', null, h('tr', null, headCells.map(([cls, label], i) => h('th', { key: i, className: cls || undefined }, label)))),
+            h('tbody', null, rows.length
+              ? rows.map((r, i) => {
+                const hit = hitOf(r.repo);
+                const add = addedCell(r.added, missing);
+                return h('tr', { key: r.repo },
+                  h('td', { className: 'gt-r' }, h(RankBadge, { rank: isAll ? r.rank : i + 1, medal: isAll || sort === 'stars' })),
+                  h('td', null, h('a', { className: 'gt-repo', ...repoLinkProps(r.repo, onRepo) }, r.name || r.repo)),
+                  h('td', null, h('span', {
+                    className: 'gt-desc',
+                    title: hit ? `原文：${r.desc}\n${hit.label}\n${hit.note}` : (r.desc || ''),
+                  }, hit?.zh || r.desc || missing)),
+                  // 语言点：这一屏的行不带 `langColor`（回落行连语言本身都没有），色点一律走 CSS 那一份灰
+                  h('td', null, r.lang
+                    ? h('span', { className: 'gt-lang' }, h('i', null), h('span', null, r.lang))
+                    : h('span', { className: 'gt-flat' }, missing)),
+                  h('td', { className: 'gt-r gt-num' },
+                    Number.isFinite(r.stars) ? fmtCount(r.stars) : missing,
+                    isAll ? null : h('span', { className: `gt-delta ${add.cls}` }, add.text)),
+                  isAll ? null : h('td', { className: thin ? 'gt-r gt-num off' : 'gt-r gt-num' },
+                    thin ? missing : [`${r.rounds} 轮`, r.bestRank > 0 ? h('span', { className: 'gt-faint2' }, `#${r.bestRank}`) : null]),
+                  h('td', { className: 'gt-tail' }, ''));
+                })
+              : h('tr', null, h('td', { colSpan: colProps.length }, h('p', { className: 'gt-empty' }, '这一档这会儿没有符合条件的仓库'))))))));
     }
 
     /** 跨榜同现：吃同一次检查的三张榜，零额外请求。 */
@@ -809,12 +958,14 @@ window.__ModuleLoader__.load({
     const TABS = [
       { id: 'overview', label: '总览' },
       ...BOARDS().map((b) => ({ id: b, label: boardLabel(b) })),
+      { id: 'stars', label: '明星仓库' },
       { id: 'events', label: '变化记录' },
       { id: 'settings', label: '设置' },
     ];
 
     function TabBar({ tab, onTab, snap }) {
       const counts = BOARDS().reduce((acc, b) => { acc[b] = snap?.boards?.[b]?.rowsTotal ?? 0; return acc; }, {});
+      counts.stars = snap?.stars?.rows?.length ?? 0;
       counts.events = (snap?.events || []).length;
       return h('nav', { className: 'gt-tabs' }, TABS.map((t) =>
         h('button', {
@@ -1057,6 +1208,7 @@ window.__ModuleLoader__.load({
       let panel;
       if (tab === 'settings') panel = h('div', { className: 'gt-panel' }, settings, h(EnvCard, { snap }));
       else if (BOARDS().includes(tab)) panel = h(BoardCard, { snap, board: tab, onRepo });
+      else if (tab === 'stars') panel = h(StarsCard, { snap, saving, onRepo, onSave: (p) => savePrefs(p) });
       else if (tab === 'events') panel = h(EventsCard, { snap });
       else panel = h(OverviewTab, { snap, conn, onGo: setTab, onRepo });
 
@@ -1095,10 +1247,10 @@ window.__ModuleLoader__.load({
     exports.PANEL_ID = PANEL_ID;
     exports.__test = {
       cfg, API_BASE, BOARDS, boardLabel, fmtAge, fmtIn, fmtCount, deltaCell, kindLabel, mergeFrame, api, consumeSse, TABS,
-      repoLinkProps, escClose, IDLE_DETAIL,
+      repoLinkProps, escClose, IDLE_DETAIL, addedCell, starsPick,
       components: {
         Header, TabBar, OverviewTab, BoardMini, StatusCard, BoardCard, CrossCard,
-        EventsCard, SettingsCard, EnvCard, RankBadge, DetailModal, GhTrendingPage,
+        EventsCard, SettingsCard, EnvCard, RankBadge, DetailModal, GhTrendingPage, StarsCard,
       },
     };
     // 宿主 ModuleLoader 吃的是 factory 的**返回值**当模块导出：

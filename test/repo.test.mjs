@@ -1,5 +1,5 @@
 /**
- * test/repo.test.mjs —— 仓库详情层（lib/services/repo.js）：闸门、中文判据、请求编排、缓存门面。
+ * test/repo.test.mjs —— 仓库详情层（lib/services/repo.js）：闸门、中文判据、请求编排、缓存门面 + 全站高星那一发。
  *
  * ★ 夹具口径：接口正文逐字节来自真 api.github.com（test/make-repo-fixtures.mjs 抓的，见 repo-api.json 的
  *   capturedAt / route），只有两处真接口没法按需触发的分支是合成的，且都在夹具文件里登记了来处：
@@ -7,6 +7,11 @@
  *   第十一轮另有一份**整份合成**的 `repo-zh-section.json`（`zh_section` 命中侧）：本机榜面 29 个仓库实测零命中，
  *   没有实抓可得 ⇒ provenance / shapeSources / readings 三项都写在该文件里，用例不许把它当实测（详见下面第 3 步的注释）。
  *   用例不许手搓"我觉得 GitHub 会这么答"的对象（项目记忆「跨边界 payload 两头都要断言」）。
+ *   ★ 第二十三轮再起一份 `repo-search.json`（`test/make-search-fixture.mjs` **整段真抓**一发 200）：这一档只吃四个字段，
+ *   所以前 `fullItems` 条逐字节全留（真 item 实测八十多个键 ⇒ 给「多余字段不进载荷」那条判据当真靶子），其余裁到那四键；
+ *   裁剪口径写在夹具里，用例只拿裁过的行钉顺序与位次（判据见下面第 7 步）。
+ *   ⚠️ 那一发实测回来的 `x-ratelimit-limit` 是 **10** 而不是 core 的 60 ⇒ search 与 REST core 两套池子，
+ *   「匿名 / 已认证」那句话各按各的匿名读数判（domain 的 `SEARCH_RATE_ANON`）。
  * ★ 假 fetch 按**整路径**精确匹配：URL 拼错（少个斜杠、没编码、打到 github.com）会直接报「没登记」，
  *   而不是被前缀匹配蒙过去 —— 那正是"离线全绿、真机 404"的形状。
  */
@@ -17,6 +22,7 @@ import {
   splitReadmeSections, pickZhSection, descIsZh, readmeZhOnScreen,
   repoFacts, repoSections, readmeMeta, fetchRepoDetail, repoCacheRow, repoView,
   createRepoDetailService, applyZh,
+  searchRepoUrl, searchRepositories, createSearchFetcher,
 } from '../lib/services/repo.js';
 import { createRepoCacheStore } from '../lib/stores.js';
 import { DESC_ZH_ROWS, DESC_ZH_LABEL } from '../lib/desc-zh.js';
@@ -30,6 +36,7 @@ import {
   REPO_SECTION_KEYS, REPO_SECTION_LABELS, REPO_BLOCK_KINDS,
   README_ZH_GATE_MIN_CJK, README_ZH_GATE_SUFFIXES,
   README_ZH_HANS_TOKENS, README_ZH_HANT_TOKENS,
+  SEARCH_STARS_FLOOR, SEARCH_PER_PAGE, SEARCH_RATE_ANON, SEARCH_ROW_SHAPE,
   llmZhLabel, engineZhLabel,
 } from '../lib/domain.js';
 
@@ -59,6 +66,23 @@ const zhSrc = (path) => {
 const ZH_MD = zhSrc(`/repos/${ZK}/readme`).text;
 const RD = zhDoc.readings;
 const WEEKLY = 'ruanyf/weekly';
+/**
+ * 第二十三轮「全站高星」那一发的夹具（**整段真抓**：`test/make-search-fixture.mjs` 一发 200 打回来的，2026-10-09）。
+ * ★ 裁剪口径写在夹具里（`response.fullItems` / `readKeys` / `fullLength` vs `keptLength`）：
+ *   前 `fullItems` 条**逐字节全留**（一条 item 实测 82 个键 ⇒「多余字段不进载荷」那条判据有真字段可扫），
+ *   其余只留被读的四个键 ⇒ 拿裁过的行钉的是**顺序与位次**，不是"GitHub 给了这么多字段"。
+ * ★ 抓取路线（direct / proxy）今天通的是哪条就记哪条，用例**不钉**：这一份钉的是回包形状，路线证据归 test/net.test.mjs。
+ */
+const sDoc = JSON.parse(await fixture('repo-search.json'));
+const SITEMS = JSON.parse(sDoc.text).items;
+const SEARCH_PATHNAME = new URL(`https://api.github.com${searchRepoUrl()}`).pathname;
+/** 夹具那一发的完整响应（over 里的同键覆盖：改正文 / 改限额头都从这里走）。 */
+const searchEntry = (over = {}) => ({
+  path: SEARCH_PATHNAME, status: sDoc.response.status, text: sDoc.text,
+  headers: { ...sDoc.response.headers }, ...over,
+});
+/** 现造 items 正文（**合成**档用它，合成理由写在用例里）。 */
+const searchBody = (items) => JSON.stringify({ total_count: items.length, incomplete_results: false, items });
 const ANT = 'ant-design/ant-design';
 const VITE = 'vitejs/vite';
 
@@ -1436,7 +1460,210 @@ check('库里躺着外部改过的脏行（手改 json / 换机搬库）：详�
 });
 
 /* ------------------------------------------------------------------ *
- * 7. 与真接口的对账（口径声明，不碰网络）
+ * 7. 「全站高星」那一发（第二十三轮 §8.8 步骤 3：URL 形状 + 回包映射 + 限额三格）
+ *
+ * ★ 这一路是本轮允许清单里**新增**的一发出网 ⇒ 判据对着**真回包**钉（`test/make-search-fixture.mjs` 一次真抓）。
+ * ★ 闸门（开关 / 存储 / 每轮预算）不在这层：那三条在 `all-stars.js`（步骤 4），本层只回答"GitHub 怎么答"。
+ * ★ 合成档只有两类，各在用例里标了出处：① 已认证那一份限额头（本机没有令牌）；② 缺字段 / null 描述那种坏行
+ *   （真回包 30 条全都规整 ⇒ 只能现造，钉的是映射形状，不是"GitHub 真的这么答"）。
+ * ------------------------------------------------------------------ */
+
+check('searchRepoUrl：门槛数只从 domain 常数来（零入参），q 里的 >= 编码成 %3E%3D，域名一个字都不带', () => {
+  const url = searchRepoUrl();
+  assert.equal(searchRepoUrl.length, 0,
+    'searchRepoUrl 接了入参 ⇒ 真跑的那个门槛数可以和设置页念的那一句分叉（§8.8「不念就等于偷偷定了一道门槛」）');
+  assert.ok(url.startsWith('/search/repositories?'), `路径形状变了：${url}`);
+  assert.ok(!/^[a-z][a-z0-9+.-]*:\/\//i.test(url), '路径里带 scheme ⇒ 域名就不只在 domain 那一份了（hc-7 扫的就是这一格）');
+  assert.ok(url.includes('%3E%3D'), '>= 没被编码：手拼字符串时 > 原样转发，search 对此给 422 ⇒ 屏上是"这一档永远空白"而 note 还在说 100,000');
+  assert.ok(!url.includes('>'), `URL 里还剩裸 >：${url}`);
+  const qs = new URL(`https://api.github.com${url}`).searchParams;
+  assert.equal(qs.get('q'), `stars:>=${SEARCH_STARS_FLOOR}`, '解码回来必须是那个常数：编码这一层不许改变查询本身');
+  assert.equal(qs.get('sort'), 'stars');
+  assert.equal(qs.get('order'), 'desc');
+  assert.equal(qs.get('per_page'), String(SEARCH_PER_PAGE));
+  assert.equal(qs.get('page'), '1', '每轮只一发 ⇒ 翻页不在这轮的能力边界里（§8.8 常数表）');
+  assert.equal(url, searchRepoUrl(), '同一份常数两次拼出不同的串 ⇒ 界面那句 note 追不上真实查询');
+  assert.ok(!/token/i.test(url), '令牌出现在 URL 拼接里（会留在代理与访问日志）');
+});
+
+check('真回包跑通：一发 200 ⇒ 30 行、位次 1..30 原样、repo 折小写而 name 保留 GitHub 的写法', async () => {
+  const f = makeApiFetch([searchEntry()]);
+  const d = await searchRepositories({ fetchFn: f, now: NOW });
+  assert.equal(d.ok, true, JSON.stringify(d));
+  assert.equal(d.at, NOW());
+  assert.equal(d.rows.length, sDoc.response.originalItems, '行数与真回包的 items 数不一致 ⇒ 有行被静默吃掉');
+  assert.deepEqual(d.rows.map((r) => r.rank), SITEMS.map((_, i) => i + 1), '位次必须是回包的原样顺序');
+  for (const [i, r] of d.rows.entries()) {
+    assert.equal(r.name, SITEMS[i].full_name, '显示名必须是 GitHub 的写法');
+    assert.equal(r.repo, SITEMS[i].full_name.toLowerCase(), '主键小写：与三榜那一路同一个主键口径，否则同一仓库在两处对不上');
+    assert.ok(Number.isFinite(r.stars) && r.stars >= 0, `${r.repo} 的星数不是有限非负数`);
+    assert.equal(r.desc, typeof SITEMS[i].description === 'string' ? SITEMS[i].description : '');
+    assert.equal(r.lang, typeof SITEMS[i].language === 'string' ? SITEMS[i].language : '');
+  }
+  // 非空转：真回包里有 freeCodeCamp/freeCodeCamp、996icu/996.ICU 这种大小写与点号 ⇒ 上面那两条不是白跑
+  assert.ok(d.rows.some((r) => r.name !== r.repo), '夹具里没有大小写混合的名字 ⇒ 小写主键那条断言是空转');
+  assert.ok(d.rows.some((r) => r.lang === ''), '夹具里没有 language 为 null 的仓库 ⇒ null 折空串那条断言是空转');
+  assert.equal(f.seen.length, 1, '本层只许一发（每轮预算在 runner 数，但这一层也不许自己补发）');
+  const one = f.seen[0];
+  assert.equal(one.method, 'GET');
+  assert.equal(one.host, 'api.github.com');
+  assert.ok(one.signal, '没接 AbortController ⇒ 撞超时的那一发还挂着，而预算已经把它算成"发过了"');
+  assert.equal(one.timeoutMs, REPO_TIMEOUT_MS, '单发预算没交给传输层 = 假超时（界面上说 15s，连接还按 30s 等）');
+});
+
+check('载荷只带 SEARCH_ROW_SHAPE 那六格：真 item 一条八十多个键，owner / score / html_url 一个字都不进', async () => {
+  const want = Object.keys(SEARCH_ROW_SHAPE).sort();   // 键表从 domain 派生 ⇒ 用例里不手抄六个名字
+  const d = await searchRepositories({ fetchFn: makeApiFetch([searchEntry()]), now: NOW });
+  assert.ok(sDoc.response.firstItemKeys > want.length + 20,
+    `夹具里"全字段"那条只有 ${sDoc.response.firstItemKeys} 个键 ⇒ 这一扫没东西可漏，是空转`);
+  for (const r of d.rows.slice(0, sDoc.response.fullItems)) {
+    assert.deepEqual(Object.keys(r).sort(), want, `${r.repo} 的键表与 schema 对不上（多带的就是第二份真相）`);
+  }
+  for (const banned of ['owner', 'score', 'html_url', 'url', 'fork', 'topics']) {
+    assert.equal(banned in d.rows[0], false, `${banned} 跟着进了载荷`);
+  }
+});
+
+check('限额三格与「匿名还是已认证」：判据吃 search 自己那一份匿名读数（真回包 10），套 core 的 60 会把生效念成没生效', async () => {
+  const H = sDoc.response.headers;
+  const anon = await searchRepositories({ fetchFn: makeApiFetch([searchEntry()]), now: NOW });
+  assert.equal(anon.rate.limit, Number(H['x-ratelimit-limit']), 'limit 必须吃响应头，不抄死');
+  assert.equal(anon.rate.left, Number(H['x-ratelimit-remaining']));
+  assert.equal(anon.rate.resetAt, Number(H['x-ratelimit-reset']) * 1000, 'reset 是 epoch 秒 ⇒ 毫秒换算在本层做完（界面不换算日期）');
+  assert.equal(anon.rate.authed, false);
+  // ★ 这一位是本轮真读数逼出来的改判：search 的匿名池**实测就比 core 的匿名池小**（10 < 60），
+  //   拿 `REPO_RATE_ANON` 判 ⇒ 带令牌的 search 那一发（已认证 30）会被念成「匿名」。
+  assert.ok(anon.rate.limit < REPO_RATE_ANON, `夹具那一份的 limit 已经不小于 core 的匿名档（${anon.rate.limit}）⇒ 这条改判的前提没了，domain 的 SEARCH_RATE_ANON 注释要重写`);
+  assert.equal(anon.rate.limit, SEARCH_RATE_ANON, '实测匿名档与判据用的那个数必须同源（哪天 GitHub 改了池子，这一条要红给你看）');
+  /** 已认证那一档：本机没有令牌 ⇒ **合成**（形状按官方口径的"比匿名那一档高"，数值不进代码，只进这一发假头）。 */
+  const authHead = { ...H, 'x-ratelimit-limit': '30', 'x-ratelimit-remaining': '29' };
+  const withTok = await searchRepositories({ fetchFn: makeApiFetch([searchEntry({ headers: authHead })]), now: NOW, ghToken: TOKEN });
+  assert.equal(withTok.rate.authed, true, '带了令牌 + GitHub 报 30 ⇒ 已认证（按 60 判就把它念成没生效）');
+  const headerWins = await searchRepositories({ fetchFn: makeApiFetch([searchEntry({ headers: authHead })]), now: NOW });
+  assert.equal(headerWins.rate.authed, true, '头在的时候以 GitHub 报的那一格为准（第二十一轮那条律，两个池子同一条）');
+  /** 代理吞头那一档：三格全缺位时退回"这一发带没带令牌"。 */
+  const bare = { 'content-type': H['content-type'] };
+  const bareAnon = await searchRepositories({ fetchFn: makeApiFetch([searchEntry({ headers: bare })]), now: NOW });
+  assert.deepEqual(bareAnon.rate, { left: null, resetAt: 0, limit: null, authed: false }, '没读到头却报"剩 0"就是假读数');
+  const bareTok = await searchRepositories({ fetchFn: makeApiFetch([searchEntry({ headers: bare })]), now: NOW, ghToken: TOKEN });
+  assert.equal(bareTok.rate.authed, true, '头不在才退回"带没带令牌"');
+});
+
+check('坏行丢掉但位次不重编：缺 full_name / 缺 stargazers_count 的行不进载荷，留下的行拿自己原来的位次（合成档）', async () => {
+  const items = [SITEMS[0], { full_name: 'ghost/no-stars' }, SITEMS[1], { stargazers_count: 999999 }, SITEMS[2]];
+  const logs = [];
+  const d = await searchRepositories({
+    fetchFn: makeApiFetch([searchEntry({ text: searchBody(items) })]), now: NOW,
+    logger: { warn: (m) => logs.push(String(m)) },
+  });
+  assert.equal(d.ok, true);
+  assert.deepEqual(d.rows.map((r) => r.rank), [1, 3, 5], '重编号 = 把"GitHub 给的顺序"改成"我数出来的顺序"（那一列的列名就叫 #）');
+  assert.equal(d.rows.length, 3);
+  assert.equal(logs.length, 1, '静默少两行与"GitHub 就给了这些"在屏上长得一样，日志里必须分得开');
+  assert.match(logs[0], /5 条里有 2 条/);
+});
+
+check('stargazers_count: 0 不是缺位（照样进这一批），null 描述 / null 语言折成空串（schema 的 optionalString 不收 null，合成档）', async () => {
+  const items = [{ full_name: 'Zero/Starred', stargazers_count: 0, description: null, language: null }];
+  const d = await searchRepositories({ fetchFn: makeApiFetch([searchEntry({ text: searchBody(items) })]), now: NOW });
+  assert.equal(d.rows.length, 1, '0 星是**读数**不是缺位：拿 `!stars` 判缺就把"真的 0"演成"坏行"');
+  assert.deepEqual(d.rows[0], { rank: 1, repo: 'zero/starred', name: 'Zero/Starred', desc: '', lang: '', stars: 0 });
+  assert.notEqual(d.rows[0].desc, null, 'null 进了 optionalString 的位置（schema 当场抛，整域读不出来）');
+});
+
+check('正文不是 JSON / 没有 items 数组 ⇒ parse 档，且这一层不给 rows（坏轮冻结由 runner 落）', async () => {
+  const cases = [
+    ['正文不是 JSON', '<html>rate limited page</html>'],
+    ['没有 items 这一格', JSON.stringify({ total_count: 129 })],
+    ['items 不是数组', JSON.stringify({ items: { 0: {} } })],
+    ['items 是 null', JSON.stringify({ items: null })],
+  ];
+  for (const [why, text] of cases) {
+    const d = await searchRepositories({ fetchFn: makeApiFetch([searchEntry({ text })]), now: NOW });
+    assert.equal(d.ok, false, `${why} 竟然当成成功`);
+    assert.equal(d.errKey, 'parse', why);
+    assert.equal(d.transport, false, `${why}：接口改版不是连不上`);
+    assert.equal('rows' in d, false, `${why}：失败行不许带 rows，否则下一层会把上一批覆盖成空`);
+    assert.equal(d.at, NOW());
+  }
+});
+
+check('非 200 与传输失败走 failOf 那四档，回执是原样句子（不套 REPO_ERROR_LABELS：那一格的 rate_limited 写死了「60 次/小时」）', async () => {
+  const limited = await searchRepositories({
+    fetchFn: makeApiFetch([searchEntry({ status: 403, text: '{"message":"API rate limit exceeded"}', headers: { ...sDoc.response.headers, 'x-ratelimit-remaining': '0' } })]),
+    now: NOW,
+  });
+  assert.equal(limited.errKey, 'rate_limited');
+  assert.match(limited.errText, /限额用尽（403/, '回执本体要在（屏上那句落款靠它）');
+  assert.ok(!/60 次|每小时/.test(limited.errText), '错误句子被 REPO_ERROR_LABELS 圆成「60 次/小时/机器」⇒ 在 search 这一档是假话（两套池子）');
+  assert.equal(limited.transport, false);
+  const forbidden = await searchRepositories({
+    fetchFn: makeApiFetch([searchEntry({ status: 403, text: '{"message":"Forbidden"}' })]), now: NOW,
+  });
+  assert.equal(forbidden.errKey, 'transport', '403 但额度没报 0 ⇒ 不许念成"你没额度了"（权限/黑名单是另一件事）');
+  const server = await searchRepositories({ fetchFn: makeApiFetch([searchEntry({ status: 500, text: 'boom' })]), now: NOW });
+  assert.equal(server.errKey, 'transport');
+  assert.match(server.errText, /返回 500/);
+  const down = await searchRepositories({ fetchFn: makeApiFetch([searchEntry({ throw: 'socket hang up', code: 'ECONNRESET', status: undefined, text: undefined })]), now: NOW });
+  assert.equal(down.errKey, 'transport');
+  assert.equal(down.transport, true, '连不上要标 transport：界面那句「直连未通」吃这一格');
+  const cfg = await searchRepositories({ fetchFn: makeApiFetch([searchEntry({ throw: '代理端口不合法', code: 'proxy_config' })]), now: NOW });
+  assert.equal(cfg.errKey, 'config', '代理配置坏到没出发，这一发根本没碰 GitHub');
+  assert.equal(cfg.transport, false);
+});
+
+check('hc-19 的效果侧扩到 search 这一发：默认零凭据；填了 ⇒ 只进请求头，URL 与域逐字节不变、令牌本体不在 URL 里', async () => {
+  const noTok = makeApiFetch([searchEntry()]);
+  await searchRepositories({ fetchFn: noTok, now: NOW });
+  assert.equal('authorization' in noTok.seen[0].headers, false, '出厂那一发带了凭据');
+  const withTok = makeApiFetch([searchEntry()]);
+  await searchRepositories({ fetchFn: withTok, now: NOW, ghToken: TOKEN });
+  assert.equal(withTok.seen[0].headers.authorization, `Bearer ${TOKEN}`);
+  assert.equal(withTok.seen[0].url, noTok.seen[0].url, '带令牌改变了 URL ⇒ 令牌会从查询串里漏进代理与访问日志');
+  assert.equal(withTok.seen[0].url.includes(TOKEN), false, '令牌出现在 URL 里');
+  assert.equal(withTok.seen[0].host, 'api.github.com', '凭据发向了别的域');
+  const blank = makeApiFetch([searchEntry()]);
+  await searchRepositories({ fetchFn: blank, now: NOW, ghToken: '   ' });
+  assert.equal('authorization' in blank.seen[0].headers, false, '发了一条空头：GitHub 按匿名算，但那不是"没填"该有的形状');
+});
+
+check('createSearchFetcher：交给 runner 的是一颗无参函数（令牌的键名不出本文件），且 getGhToken 现取现算', async () => {
+  const box = { v: '' };
+  const f = makeApiFetch([searchEntry()]);
+  const fetchBatch = createSearchFetcher({ fetchFn: f, now: NOW, getGhToken: () => box.v });
+  assert.equal(fetchBatch.length, 0,
+    'runner 能传参 ⇒ 它能传进自己的令牌/别的 URL，"Authorization 只造在 repo.js"那条字面律就没了落脚点（hc-21 按键名扫文件）');
+  await fetchBatch();
+  assert.equal('authorization' in f.seen[0].headers, false, '偏好里没令牌时装配层把空串当成有');
+  box.v = TOKEN;
+  const d = await fetchBatch();
+  assert.equal(d.ok, true);
+  assert.equal(f.seen[1].headers.authorization, `Bearer ${TOKEN}`, '装配时抄死令牌 ⇒ 设置页填完要等宿主重启才生效（第十二轮那笔账）');
+  box.v = '';
+  await fetchBatch();
+  assert.equal('authorization' in f.seen[2].headers, false, '清空令牌后还带着发 ⇒ 库里已经没了');
+  assert.equal(f.seen.length, 3, '每一次调用恰好一发');
+});
+
+check('夹具对账（search）：真抓 200 + 限额头实测 + 裁剪口径登记在案（用例不许把裁过的行当全文）', () => {
+  assert.equal(sDoc.response.status, 200, '夹具不是 200 ⇒ 这一整套映射判据钉的是抓取失败现场');
+  assert.ok(Number.isFinite(sDoc.capturedAt) && sDoc.capturedAt > 0, '没有抓取时刻 ⇒ 不知道这份形状属于哪一天的接口');
+  assert.equal(sDoc.request.path, searchRepoUrl(), '夹具与代码拼的那一发不是同一条 URL ⇒ 下面所有断言都在对空气');
+  assert.equal(sDoc.response.headers['x-ratelimit-limit'], String(SEARCH_RATE_ANON), 'search 池的实测匿名档与判据不同源');
+  assert.equal(sDoc.response.headers['x-ratelimit-remaining'], '9', '真抓那一发的剩余额度（非空转：证明这不是抄来的头）');
+  assert.ok(sDoc.response.fullLength > sDoc.response.keptLength, '没裁剪却写着裁剪口径 ⇒ 夹具与生成器分叉了');
+  assert.equal(SITEMS.length, sDoc.response.originalItems);
+  for (let i = 0; i < sDoc.response.fullItems; i++) {
+    assert.equal(Object.keys(SITEMS[i]).length, sDoc.response.firstItemKeys, `第 ${i} 条写着全字段却只有 ${Object.keys(SITEMS[i]).length} 个键`);
+  }
+  for (const it of SITEMS.slice(sDoc.response.fullItems)) {
+    assert.ok(Object.keys(it).every((k) => sDoc.response.readKeys.includes(k)), '裁过的行里出现被读的四键之外的字段 ⇒ 裁剪口径没生效');
+  }
+  assert.deepEqual(sDoc.response.topLevelKeys, ['total_count', 'incomplete_results', 'items'], '顶层形状变了就先改夹具口径，别改代码去迁就');
+});
+
+/* ------------------------------------------------------------------ *
+ * 8. 与真接口的对账（口径声明，不碰网络）
  * ------------------------------------------------------------------ */
 check('夹具口径：真字节 + 抓取时刻 + 合成档登记在案（用例不许把合成当实测）', () => {
   assert.equal(doc.responses.length, 10);

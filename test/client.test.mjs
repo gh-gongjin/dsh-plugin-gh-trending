@@ -31,14 +31,22 @@ import {
   TRANSLATE_COMMON_NOTE, LLM_SWITCH_LABELS, LLM_README_LABEL_TRANSLATE, LLM_KINDS, LLM_NOT_READY_HINT, llmZhLabel,
   // 第二十二轮：榜面那一列的两种来源，落款与那句"发不出去"的实话都在 domain，用例只认名字不抄文本。
   engineZhLabel, DESC_ZH_LIVE_NOTE, DESC_ZH_BLOCKED_NOTE,
+  // ★ 第二十三轮：明星那一屏的档位名 / 列名 / 三句 note 全归 domain（判据见 client-32 末尾那一段豁免清单的理由）。
+  STARS_NO_STORE_NOTE, STARS_QUOTA_OFF_NOTE, STARS_QUOTA_WAITING_NOTE, STARS_ALL_STARS_NOTE,
+  STARS_COL_STARS_ADDED, STARS_COL_ROUNDS_PEAK, STARS_COL_STARS,
+  STARS_VIEW_LABELS, STARS_VIEW_DISABLED_LABELS, STARS_SORT_LABELS,
 } from '../lib/domain.js';
 import { netView, translatorView, githubView, publicPrefs } from '../lib/api.js';
 import { DESC_ZH_ROWS, DESC_ZH_LABEL, DESC_ZH_NOTE } from '../lib/desc-zh.js';
 // ★ 第二十二轮：`descZh` 那一格改由宿主自己的装配函数现造（同 netView / translatorView 那条律）。
 //   上一版在这里手搓 `{label, note, hits}` ⇒ 宿主换成 `{hits, heads, liveNote}` 之后客户端 57 条照样绿，
 //   而真机的榜面那一列会整列空掉。夹具跟着源走，形状漂移才会当场红。
-import { descZhView, allVisibleRows, boardDescZhHead } from '../lib/board-zh.js';
+import { descZhView, descZhRows, boardDescZhHead } from '../lib/board-zh.js';
+import { transSrcKey } from '../lib/services/llm.js';
 import { repoView, applyZh } from '../lib/services/repo.js';
+// ★ 第二十三轮：`stars` 那一格同样由宿主的 starsView 现造（同 netView / descZhView 那条律）。
+//   上一版若在这里手搓 `{headline, rows, views...}`，宿主改一次键名客户端 58 条照样绿，真机那一屏却是空的。
+import { starsView } from '../lib/stars.js';
 
 /** 载荷 = index.js 里 webserver/index-inject 推的那一份，逐键对齐。 */
 const PAYLOAD = {
@@ -60,6 +68,7 @@ const PAYLOAD = {
  * 沙箱跑 client.js。opts：
  *  · fetch —— 替 api() 与 useStream 的出网口（默认抛，免得测试真联网）
  *  · snap / tab —— 顶掉 GhTrendingPage 的 useState 初值，用来逐页签测路由
+ *  · states —— 按"本次渲染里第几个 useState"顶初值（★ 只配单组件渲染用，见上面 stateSets 那条）
  *  · stylePresent —— 假装 document 里已有同 id 的 style（测 reload 不叠两份）
  */
 function loadClient(payload = PAYLOAD, opts = {}) {
@@ -68,6 +77,11 @@ function loadClient(payload = PAYLOAD, opts = {}) {
   const styleOps = [];
   const docListeners = {};
   const effects = [];
+  // ★ 第二十三轮：组件内部状态（StarsCard 的 view / sort）没有入参口子，判据就只能从"点之后它把什么写回状态"取。
+  //   `stateSets` 记下每次 setter 被谁调用（带初值做身份），`opts.stateInits` 按"本次渲染里第几个 useState"顶初值。
+  //   两者都只在**单组件渲染**里用（顶的是整页的第 N 个 useState，跨组件没有意义）。
+  const stateSets = [];
+  let setCursor = 0;
   const fakeDoc = {
     getElementById: (id) => (opts.stylePresent ? { id } : null),
     createElement: (tag) => {
@@ -88,12 +102,15 @@ function loadClient(payload = PAYLOAD, opts = {}) {
   const fakeReact = {
     createElement: (type, props, ...children) => ({ type, props: props ?? {}, children: children.flat(Infinity) }),
     useState: (init) => {
+      const idx = setCursor++;
+      const forced = Array.isArray(opts.states) ? opts.states[idx] : undefined;
       // detail 的初值认形状不认 null：IDLE_DETAIL 是对象，跟 snap 那条 `init === null` 撞不上，
       // 而「顶掉第一个对象初值」会把别处初值一起顶掉 ⇒ 按键名挑出来。
-      const v = (opts.snap !== undefined && init === null) ? opts.snap
-        : (opts.tab && init === 'overview' ? opts.tab
-        : (opts.detail && init && init.view === null && init.loading === false ? opts.detail : init));
-      return [v, () => {}];
+      const v = forced !== undefined ? forced
+        : ((opts.snap !== undefined && init === null) ? opts.snap
+          : (opts.tab && init === 'overview' ? opts.tab
+            : (opts.detail && init && init.view === null && init.loading === false ? opts.detail : init)));
+      return [v, (next) => { stateSets.push({ idx, init, next }); }];
     },
     // 不跑 effect（useStream 那一跑就会留一个每 5 秒重连的活定时器），只记下来让用例点名跑
     useEffect: (fn, deps) => { effects.push({ fn, deps }); },
@@ -122,7 +139,7 @@ function loadClient(payload = PAYLOAD, opts = {}) {
   const exports = loaded.exports;
   assert.ok(exports && typeof exports === 'object' && typeof exports.apply === 'function',
     'factory 必须 return module.exports（返回 module 外层拿不到 apply ⇒ 真机 invalid plugin）');
-  return { exports, sandbox, styleOps, effects, docListeners };
+  return { exports, sandbox, styleOps, effects, docListeners, stateSets };
 }
 
 const AT = 1790700000000;
@@ -132,11 +149,35 @@ const row = (repo, rank, over = {}) => ({
   stars: 12345, forks: 42, added: 512, delta: 0, ...over,
 });
 /**
+ * 观测史一行的形状 = `createSeenStore().touch()` 真正落库的那一份（键恒小写，格名照抄 `seenStore`，用例不自立一套）。
+ * ★ 为什么不省略 `roundsTotal` / `bestRank`：那一屏的「在榜」列全吃这两格，夹具给少了 ⇒ 客户端测的是"没有这一格"。
+ */
+const seenRow = (repo, over = {}) => ({
+  repo, name: repo, repoId: 1,
+  firstAt: atOff(-6 * 86400000), firstBoard: 'daily',
+  lastAt: atOff(-60000), lastBoard: 'daily', boards: ['daily'],
+  roundsTotal: 1, bestRank: 1, ...over,
+});
+/** 默认那一份榜史：三档各有行，且「回落」那一档必须真有一行不在屏上（否则置灰与缺位那几条判据是空跑）。 */
+function defaultSeenRows(dailyRepo) {
+  const rows = [
+    seenRow(dailyRepo, { roundsTotal: 7, bestRank: 1, lastAt: atOff(-60000) }),
+    seenRow('a/two', { roundsTotal: 4, bestRank: 2 }),
+    seenRow('a/three', { roundsTotal: 1, bestRank: 3 }),
+    seenRow('w/one', { roundsTotal: 2, bestRank: 5, lastBoard: 'weekly', boards: ['weekly'] }),
+    seenRow('g/gone', { roundsTotal: 6, bestRank: 2, lastAt: atOff(-2 * 86400000) }),
+  ];
+  return new Map(rows.map((r) => [r.repo, r]));
+}
+
+/**
  * 一份与 lib/api.js 的 snapshotOf 同形的快照。
  * ⚠️ 宿主的 snapshotOf 每加一个键都要在这里跟着加，否则「两头都断言」会退化成客户端自己编形状
  *    （nameImage 那次的教训：fixture 少一个键 ⇒ 用例全绿、真机坏）。
+ * ⚠️ 第二参 `starsOver` 只喂 `starsView` 的**入参**（榜史 / 那一批 search / 存储位 / 开关），不是往快照里塞 `stars`：
+ *    塞进去的那一份是客户端自己编的形状，正是这条律要防的那种假绿。
  */
-function snapFixture(over = {}) {
+function snapFixture(over = {}, starsOver = {}) {
   const b = (board, rows, bo = {}) => ({
     label: BOARD_LABELS[board], hasData: true, ok: true, error: undefined,
     at: atOff(-60000), bodyChangedAt: atOff(-3600000), lastFetchAt: atOff(-60000), failStreak: 0,
@@ -153,12 +194,11 @@ function snapFixture(over = {}) {
   // ★ 描述列的中文（第二十二轮起两种来源并排）：hits / heads 全部由宿主的 `descZhView` + `boardDescZhHead` 现算，
   //   喂进去的 transRows 就是 KV 里那一行的形状 —— 用例不手搓落款，也就不会自己编日期。
   //   a/one 的 desc 取内置表里真那一句原文 ⇒ 走 builtin；w/one 走库里逐字命中的现译行 ⇒ 走 live。
-  const transRows = [
+  // ★ 10-10：参与行集合与宿主**同一个出处**（`descZhRows`），所以这一段排在 `stars` 之后算 ——
+  //   api.js 里也是那份顺序（先有那一档的行，才有"这一档开着的屏上那些行"）。夹具自己 `allVisibleRows(boards)` 就是第二份真相。
+  const transRows = starsOver.transRows ?? [
     { repo: 'w/one', kind: 'desc', src: 'A plain english line', zh: '这一句是现译的中文', at: atOff(-120000), chars: 8, engine: 'keyless' },
   ];
-  const zhView = descZhView(allVisibleRows(boards), transRows, { nowMs: AT });
-  const heads = {};
-  for (const k of BOARDS) heads[k] = boardDescZhHead(boards[k].rows, zhView.hits);
   // ★ net 这一份视图是宿主 netView 现造的（它 export 出来就是给这里用）：
   //   用例手搓形状就等于客户端在测自己编的字段，真机少一个键照样全绿。
   const net = netView({
@@ -167,6 +207,33 @@ function snapFixture(over = {}) {
       reason: '', targetHost: 'github.com', at: atOff(-60000),
     }),
   }, boards).view;
+  // ★ 第二十三轮：`prefs` 先算出来，`starsView` 与快照吃的是**同一份**（出网前那道闸摘掉的密钥夹具也拿不到）。
+  //   默认是**非默认值**那条律不变（出厂 desc 开 / readme 关 / 全站高星关）。
+  const prefs = publicPrefs({
+    ...DEFAULT_PREFS, intervalMin: 180, llmDesc: false, llmReadme: true, translateEngine: 'host_llm',
+    baiduAppid: 'stored-appid', tencentSecretId: 'AKIDstored', aliyunAccessKeyId: 'LTAIstored',
+    baiduKey: 'sekret-in-store', tencentSecretKey: 'sekret-in-store', aliyunAccessKeySecret: 'sekret-in-store',
+    ...(starsOver.prefs || {}),
+  });
+  /**
+   * 「明星仓库」那一格：入参逐条对齐 `lib/api.js:470` 那次调用（`roundAt` 同样取三榜最新那个 `at`，
+   * 存储位同样吃 `seenStore.available`）。`search` 默认 `null` = 本机从没取回过那一档（出厂开关关着）。
+   */
+  const stars = starsView({
+    seenRows: starsOver.seenRows ?? defaultSeenRows(DESC_ZH_ROWS[0][0]),
+    boards,
+    roundAt: starsOver.roundAt ?? Math.max(boards.daily.at, boards.weekly.at, boards.monthly.at, 0),
+    prefs,
+    search: starsOver.search ?? null,
+    storageAvailable: starsOver.storageAvailable ?? true,
+  });
+  const zhView = descZhView(descZhRows({
+    boards,
+    allStarsRows: stars.allStars.rows,
+    allStarsEnabled: prefs.allStarsEnabled === true,
+  }), transRows, { nowMs: AT });
+  const heads = {};
+  for (const k of BOARDS) heads[k] = boardDescZhHead(boards[k].rows, zhView.hits);
   return {
     at: AT,
     caps: { storageDomain: true, timer: true, webServer: true },
@@ -177,11 +244,7 @@ function snapFixture(over = {}) {
     // 故意填**非默认值**（出厂是 desc 开 / readme 关）：两个方向都反着默认，界面上才分得清"回填"和"写死"
     // ★ 三家凭据那三格标识符走 `publicPrefs`（宿主出网前的同一道闸）：密钥那一格从来不在载荷里，
     //   fixture 要是自己拼出 `baiduKey`，客户端"永不回填密钥"这条判据就当场失效（假绿）。
-    prefs: publicPrefs({
-      ...DEFAULT_PREFS, intervalMin: 180, llmDesc: false, llmReadme: true, translateEngine: 'host_llm',
-      baiduAppid: 'stored-appid', tencentSecretId: 'AKIDstored', aliyunAccessKeyId: 'LTAIstored',
-      baiduKey: 'sekret-in-store', tencentSecretKey: 'sekret-in-store', aliyunAccessKeySecret: 'sekret-in-store',
-    }),
+    prefs,
     storage: { available: true },
     sourceNote: TRENDING_SOURCE_NOTE,
     langCheck: LANG_CHECK,
@@ -197,6 +260,8 @@ function snapFixture(over = {}) {
     // nextCheckAt 0 = 没在跑表（停表 / 检查服务缺位），界面据此不说「下次自动检查」
     cadence: { intervalMin: 180, effectiveMs: 10800000, backoffExp: 0, nextCheckAt: 0, fetchAttempts: FETCH_ATTEMPTS },
     boards,
+    // ★ 第二十三轮：明星那一屏的原料（宿主 starsView 现造，见上面那次调用的注释）。
+    stars,
     cross: { rising: [], cooling: [], note: '跨榜同现由这一次检查的三张榜交叉算出，不额外发请求。' },
     events: [],
     ...over,
@@ -646,7 +711,7 @@ check('client-16 新增列名跟着榜走：今日 / 本周 / 本月来自载荷
     '新增', '不许拿日榜文案套月榜');
 });
 
-check('client-17 页签条：六签齐且有序，当前签高亮，计数徽标只在有数时出现', () => {
+check('client-17 页签条：七签齐且有序，当前签高亮，计数徽标只在有数时出现', () => {
   const { TabBar } = loadClient().exports.__test.components;
   const clicked = [];
   const snap = snapFixture({ events: [{ id: 'e1', at: AT, kind: 'board_enter', repo: 'a/one' }] });
@@ -654,16 +719,16 @@ check('client-17 页签条：六签齐且有序，当前签高亮，计数徽标
   const nav = findByClass(tree, 'gt-tabs')[0];
   assert.ok(nav, '页签条没渲染出来，判据空转');
   const btns = kidsOf(nav, 'button');
-  assert.deepEqual(btns.map((b) => b.children[0]), ['总览', '日榜', '周榜', '月榜', '变化记录', '设置'],
-    '三榜签标题来自载荷 boardLabels，其余三个是界面结构名');
-  assert.deepEqual(btns.map((b) => hasCls(b, 'on')), [false, false, true, false, false, false]);
+  assert.deepEqual(btns.map((b) => b.children[0]), ['总览', '日榜', '周榜', '月榜', '明星仓库', '变化记录', '设置'],
+    '三榜签标题来自载荷 boardLabels，其余四个是界面结构名（★ 第二十三轮插入第七签「明星仓库」，位置紧跟三榜：它读的是同一批榜史）');
+  assert.deepEqual(btns.map((b) => hasCls(b, 'on')), [false, false, true, false, false, false, false]);
   for (const b of btns) b.props.onClick();
-  assert.deepEqual(clicked, ['overview', 'daily', 'weekly', 'monthly', 'events', 'settings'], '回调必须带页签键');
-  assert.deepEqual(findByClass(tree, 'gt-tab-n').map(text), ['20', '20', '1'],
-    '徽标 = 该榜榜面条数 / 流水条数；0 与缺位都不给徽标（0 冒充有数最坏）');
+  assert.deepEqual(clicked, ['overview', 'daily', 'weekly', 'monthly', 'stars', 'events', 'settings'], '回调必须带页签键');
+  assert.deepEqual(findByClass(tree, 'gt-tab-n').map(text), ['20', '20', String(snap.stars.rows.length), '1'],
+    '徽标 = 该榜榜面条数 / 明星那一屏的行数 / 流水条数；0 与缺位都不给徽标（0 冒充有数最坏）');
 
   const first = render(TabBar, { tab: 'overview', onTab() {}, snap: undefined });
-  assert.equal(kidsOf(findByClass(first, 'gt-tabs')[0], 'button').length, 6, '首帧前六签照样齐');
+  assert.equal(kidsOf(findByClass(first, 'gt-tabs')[0], 'button').length, 7, '首帧前七签照样齐');
   assert.deepEqual(findByClass(first, 'gt-tab-n').map(text), [], '没有快照就不许编计数');
   assert.ok(kidsOf(findByClass(first, 'gt-tabs')[0], 'button')[0].props.className.includes('on'));
 
@@ -950,18 +1015,23 @@ check('client-29 样式注入：同 id 已存在就跳过（reload 不叠两份�
   assert.deepEqual(b.styleOps, [], 'document 里已有同 id style ⇒ 一份都不许再塞');
 });
 
-check('client-30 页签路由：六签各自成页、页签条常驻，首帧前每页都有话说', () => {
+check('client-30 页签路由：七签各自成页、页签条常驻，首帧前每页都有话说', () => {
   const page = (opts) => render(loadClient(PAYLOAD, opts).exports.__test.components.GhTrendingPage, {});
   const titles = (tree) => findByClass(tree, 'gt-card-t').map(text);
 
   const before = page({});
   assert.equal(findByClass(before, 'gt-root').length, 1);
   assert.equal(findByClass(before, 'gt-tabs').length, 1, '页签条常驻：换页不能把它一起换掉');
-  assert.equal(kidsOf(findByClass(before, 'gt-tabs')[0], 'button').length, 6);
+  assert.equal(kidsOf(findByClass(before, 'gt-tabs')[0], 'button').length, 7);
   assert.deepEqual(titles(before), ['三榜状态', '日榜', '周榜', '月榜', '跨榜同现'], '默认落在总览页');
   const t = text(before);
   assert.match(t, /等待首帧/);
   assert.match(t, /还没有记录|还没有数据/, '首帧前要有话说，不能一片空白');
+  // ★ 第二十三轮：明星那一页的首帧前分支同样要有话说 —— 它读的是「本机攒下的榜史」，没快照就是没榜史。
+  const starsBefore = page({ tab: 'stars' });
+  assert.deepEqual(titles(starsBefore), ['明星仓库']);
+  assert.match(text(starsBefore), /等待首帧/);
+  assert.equal(findAllType(starsBefore, 'table').length, 0, '没有载荷就不摆一张空表（摆出来是把"没数据"演成"没仓库"）');
   assert.deepEqual(titles(page({ tab: 'settings' })), ['运行环境']);
   assert.match(text(page({ tab: 'settings' })), /配置未就位/);
 
@@ -971,6 +1041,7 @@ check('client-30 页签路由：六签各自成页、页签条常驻，首帧前
     daily: ['日榜'],
     weekly: ['周榜'],
     monthly: ['月榜'],
+    stars: ['明星仓库'],
     events: ['变化记录'],
     settings: ['设置', '运行环境'],
   };
@@ -1053,7 +1124,28 @@ check('client-32 一份真相：枚举文案在 client 里一个都不许出现'
     ...Object.values(README_ZH_GATE_SUFFIXES),
     // 列名里两字的（'主页'）会撞上本面板自己的按钮词（'项目主页 ↗'）⇒ 只钉三字以上的，别误伤
     ...Object.values(REPO_FIELD_LABELS).filter((s) => s.length > 2),
+    // ★ 第二十三轮（明星那一屏，§7.7 那条「界面不数条、不拼句、不判档」在这里的落点）：
+    //   三句 note + 两个并进列名 + 档位名 + 排序名，写死的只许在 domain。
+    STARS_NO_STORE_NOTE, STARS_QUOTA_OFF_NOTE, STARS_QUOTA_WAITING_NOTE, STARS_ALL_STARS_NOTE,
+    STARS_COL_STARS_ADDED, STARS_COL_ROUNDS_PEAK,
+    STARS_VIEW_LABELS.regular, STARS_VIEW_LABELS.rising, STARS_VIEW_DISABLED_LABELS.allStars,
+    ...Object.values(STARS_SORT_LABELS),
+    // 那两句带数字的句子没法整串钉住（客户端自己拼一份就把两处钉死在同一句话上）⇒ 钉它唯一的静态片段
+    '本屏 =', '不够判「在榜」',
+    /* ★ 三条豁免，逐条给理由（写了才不会被下一个人当疏漏补上）：
+       · STARS_COL_STARS（'累计 ★'）：榜面表头从第十四轮起就写死同一串（`client.js:567`），
+         这一屏改由"换载荷值 ⇒ 屏上跟着换"那条判据钉（client-61 ③），比子串扫描更硬。
+       · STARS_VIEW_LABELS.cooling（'回落'）撞跨榜卡头的段标题「热度回落」，STARS_VIEW_LABELS.all（'全部'）
+         与 STARS_VIEW_DISABLED_LABELS 去掉前缀后的'全站高星'都是中文高频词/故障句主语 —— 子串扫描会误伤，
+         这两档的名字同样由 client-60「档位名单逐字吃 stars.views」那条判据管。
+       · STARS_MISSING_CELL（'—'）：榜面在第十二轮就有三处硬编码缺位格，这一屏改吃 `stars.missingCell`
+         并由 client-61 ① 验"换载荷值屏上跟着换"；把整表的破折号一起清了是另一轮的活。 */
   ];
+  // 豁免清单的前提得在盘上成立（那三串长这样）：domain 哪天改了字面，这条先红，提醒上面那段理由同步改。
+  assert.equal(STARS_COL_STARS, '累计 ★');
+  assert.equal(STARS_VIEW_LABELS.cooling, '回落');
+  assert.ok(body.includes('累计 ★') && body.includes('热度回落'),
+    '上面两条豁免之所以是豁免，是因为榜面与跨榜卡头真的各写着这两串；写它的地方没了就把豁免撤掉、请回 banned 清单');
   for (const s of banned) {
     assert.ok(!body.includes(s), `client.js 里出现了宿主单点的文案「${s}」⇒ 两处会漂，界面上必须吃载荷`);
   }
@@ -1987,6 +2079,352 @@ check('client-55 同一条失败句在详情里只念一次：摘要段那块跟
   const td = mk(diff);
   assert.equal(count(td, '1,842 字'), 1, '摘要自己的回执被去重去掉了');
   assert.ok(td.includes('翻译接口回得太长'), '原因不同却撤掉摘要那句 = 把一次失败说成没有失败');
+});
+
+/* ---------------- 第二十三轮：明星仓库那一屏（§7.7 形状 B / §8.8 第 6 步） ---------------- */
+
+/** 落库那一批 search 行的形状 = `SEARCH_ROW_SHAPE`（主键小写、六格，rank 之外不带任何派生格）。 */
+const searchRowOf = (rank, repo, over = {}) => ({
+  rank, repo, name: repo, desc: 'A plain english line', lang: 'JavaScript', stars: 400000 - rank * 1000, ...over,
+});
+const searchBatchOf = (rows, bo = {}) => ({
+  ok: true, at: atOff(-60000), rows, rateLeft: 8, rateLimit: 10, rateResetAt: 0, rateAuthed: false, ...bo,
+});
+/** 单组件渲染 StarsCard：把内部两个状态（第 0 个 = 视图，第 1 个 = 排序）顶成指定值。 */
+const starsWith = (view, snap, props = {}, sort) => {
+  const states = sort === undefined ? [view] : [view, sort];
+  const lc = loadClient(PAYLOAD, { states });
+  return { lc, tree: render(lc.exports.__test.components.StarsCard, { snap, onRepo() {}, onSave() {}, ...props }) };
+};
+/** 明星那一屏的一行格（tbody 第 i 行）。 */
+const starsCells = (tree, i = 0) => kidsOf(kidsOf(findAllType(tree, 'table')[0], 'tbody')[0], 'tr')
+  .map((tr) => kidsOf(tr, 'td'))[i];
+
+check('client-59 明星那一屏：形状 B 七列 / 全站高星档六列，col·th·td 逐列同数且整页一张卡（§8.8 第 6 步）', () => {
+  const { StarsCard, GhTrendingPage } = loadClient().exports.__test.components;
+  const snap = snapFixture();
+  const tree = render(StarsCard, { snap, onRepo() {}, onSave() {} });
+  const tbl = findAllType(tree, 'table')[0];
+  assert.ok(tbl, '表没渲染出来，判据空转');
+  const cols = kidsOf(kidsOf(tbl, 'colgroup')[0], 'col');
+  const ths = cellsOf(tbl, 'thead');
+  const tds = cellsOf(tbl, 'tbody');
+  assert.equal(cols.length, 7, '形状 B 是七列（九列那一版把首屏吃成两三行表，用户已否）');
+  assert.equal(ths.length, cols.length, '表头列数 ≠ 列模板');
+  assert.equal(tds.length, cols.length, '数据格数 ≠ 列模板（fixed 布局下整行错位）');
+  const seq = (list) => list.map((n) => hasCls(n, 'gt-r')).join(',');
+  assert.equal(seq(ths), seq(tds), '表头与列值对齐方向逐列不一致');
+  // 列名逐字吃载荷：两个"并进"列的名字只归 domain
+  assert.deepEqual(ths.map(text), ['#', '仓库', '描述', '语言', snap.stars.starsAddedLabel, snap.stars.roundsPeakLabel, '']);
+  assert.ok(hasCls(ths[6], 'gt-tail') && text(ths[6]) === '', '兜底列必须空且带 gt-tail');
+  // 列宽律与榜面同一条：数值列拿死数、唯一读得出内容的那列吃余量、末尾兜底 0
+  assert.equal(cols[0].props.style.width, 46);
+  assert.ok(hasCls(cols[1], 'gt-col-repo') && !cols[1].props.style, '仓库列宽走 CSS（窄视口要能回退）');
+  assert.ok(hasCls(cols[2], 'gt-col-desc') && !cols[2].props.style, '描述列 width:auto 吃余量');
+  assert.deepEqual(cols.slice(3, 6).map((c) => c.props.style.width), [112, 132, 104],
+    '三个数值列的死数改了要连同需宽读数一起对（累计★ / 今日新增并进那格 / 在榜并进那格）');
+  assert.ok(hasCls(cols[6], 'gt-tail') && !cols[6].props.style, '兜底列宽度归 CSS，不许内联写宽');
+
+  // 卡头只摆三件（标题 / 视图分段器 / 那一档的开关）；排序分段器与统计那句在卡体首行 .gt-bar
+  const head = findByClass(tree, 'gt-card-h')[0];
+  const body = findByClass(tree, 'gt-card-b')[0];
+  assert.equal(findByClass(head, 'gt-seg').length, 1, '卡头有第二个分段器 = 控件全挤回卡头，窄面板会把卡头顶到 81~165px（A 被否的主因）');
+  assert.deepEqual(findByClass(head, 'gt-seg').flatMap((s) => kidsOf(s, 'button').map(text)), snap.stars.views.map((o) => o.label));
+  assert.equal(findByClass(head, 'gt-btn').length, 1);
+  assert.equal(findByClass(body, 'gt-bar').length, 1, '.gt-bar（排序 + 统计那句）是卡体首行，不是卡头');
+  assert.deepEqual(findByClass(body, 'gt-bar').flatMap((s) => findByClass(s, 'gt-seg').flatMap((g) => kidsOf(g, 'button').map(text))),
+    snap.stars.sorts.map((o) => o.label), '排序分段器在卡体那一行里（按钮挂在 gt-seg 下，不是 gt-bar 直接子）');
+  assert.equal(findByClass(tree, 'gt-note').length, 0, '原型卡脚那两句是客户端自拼的框架句，不进生产（§8.8 落地改口 13）');
+
+  // 整页一张卡：section.gt-card 是 .gt-root 的直接子（照 BoardCard），不是 .gt-panel 的孙子
+  const page = render(loadClient(PAYLOAD, { tab: 'stars', snap }).exports.__test.components.GhTrendingPage, {});
+  const root = findByClass(page, 'gt-root')[0];
+  const sections = kidsOf(root, 'section');
+  assert.equal(sections.length, 1, '明星页就是一张卡');
+  assert.ok(hasCls(sections[0], 'gt-card'), '卡不是 .gt-root 的直接子 ⇒ 宿主 flex 链断在这一层，卡没高度');
+  assert.equal(kidsOf(root, 'div').filter((n) => hasCls(n, 'gt-panel')).length, 0, '这一页不许再套一层 .gt-panel');
+
+  // 名次徽标的语义（第十四轮那套色档在这一屏的用法）：奖牌只给"有依据的名次"
+  const badges = (t) => findByClass(t, 'gt-rank').map((n) => n.props.className);
+  assert.deepEqual(badges(tree).slice(0, 3), ['gt-rank gt-rank-1', 'gt-rank gt-rank-2', 'gt-rank gt-rank-3'],
+    '按总星排时前三行拿金银铜（排序后的第几名 = 这一屏当前的读数）');
+  assert.deepEqual(badges(tree).slice(3), ['gt-rank gt-rank-n', 'gt-rank gt-rank-n']);
+  assert.deepEqual(badges(starsWith('all', snap, {}, 'added').tree), Array(5).fill('gt-rank gt-rank-n'),
+    '按今日新增排就不许涂金银铜：那一个顺序里没有"名次"这件事');
+  // 那一档的徽标读的是载荷 rank（GitHub 给的位置），不是重排后的行号 —— 两者可以不等
+  const rankSnap = snapFixture({}, { prefs: { allStarsEnabled: true }, search: searchBatchOf([
+    searchRowOf(3, 'c/third', { stars: 999000 }), searchRowOf(1, 'a/first', { stars: 100 }), searchRowOf(2, 'b/sec', { stars: 200 }),
+  ]) });
+  const rankTree = starsWith('allStars', rankSnap).tree;
+  assert.deepEqual(findByClass(rankTree, 'gt-rank').map(text), ['3', '2', '1'],
+    '徽标数字 = 载荷 rank：把行号当名次就是把"我排的序"说成"GitHub 给的序"');
+  assert.deepEqual(badges(rankTree), ['gt-rank gt-rank-3', 'gt-rank gt-rank-2', 'gt-rank gt-rank-1'],
+    '颜色跟着 rank 走，不跟着行号走（第一行是 GitHub 的第 3 名 ⇒ 铜色）');
+
+  // CSS 侧：几何契约那四条规则原文（「规则文本在、效果死」那一族）
+  const css = (clientSrc().match(/const CSS = `([\s\S]*?)`;/) || [])[1] || '';
+  assert.match(css, /\.gt-root>\.gt-card\{flex:1;min-height:0;display:flex;flex-direction:column\}/);
+  assert.match(css, /\.gt-root>\.gt-card>\.gt-card-b\{flex:1;min-height:0\}/);
+  assert.match(css, /\.gt-bar\{[^}]*flex:none/, '卡体那一行必须 flex:none，否则会被滚动区挤掉');
+  assert.match(css, /\.gt-scroll\{flex:1;min-height:0;overflow-y:auto;overflow-x:hidden/);
+
+  // 全站高星那一档：列集跟着收（六列）、排序分段器不摆、统计那句换成宿主拼好的整句
+  const allSnap = snapFixture({}, { prefs: { allStarsEnabled: true }, search: searchBatchOf([searchRowOf(1, 'freecodecamp/freecodecamp')]) });
+  const { tree: all } = starsWith('allStars', allSnap);
+  const allCols = kidsOf(kidsOf(findAllType(all, 'table')[0], 'colgroup')[0], 'col');
+  const allThs = cellsOf(findAllType(all, 'table')[0], 'thead');
+  assert.equal(allCols.length, 6, '那一档没有「轮」与「今日新增」的概念，摆出来就是把「被我抓过」说成「在榜过」');
+  assert.equal(allThs.length, 6);
+  assert.equal(cellsOf(findAllType(all, 'table')[0], 'tbody').length, 6);
+  assert.deepEqual(allThs.map(text), ['#', '仓库', '描述', '语言', allSnap.stars.starsLabel, '']);
+  assert.deepEqual(allCols.slice(3, 5).map((c) => c.props.style.width), [112, 64]);
+  assert.equal(findByClass(all, 'gt-bar').flatMap((s) => findByClass(s, 'gt-seg')).length, 0,
+    '那一档的排序分段器不摆：宿主已按 stars 降序给行，界面再排一遍就是第二真相');
+  assert.equal(text(findByClass(all, 'gt-card-n')[0]), allSnap.stars.allStars.statLine, '统计那句整段吃 allStars.statLine');
+  assert.ok(allSnap.stars.allStars.statLine.includes('search 额度剩 8 / 10'), '前提：额度那三个数由宿主从响应头拼（客户端不许自己数）');
+});
+
+check('client-60 档位名单 / 排序名单 / 那两句整句逐字吃载荷：换载荷值屏上跟着换，未开启那一枚灰着但说得清为什么', () => {
+  const { StarsCard } = loadClient().exports.__test.components;
+  const snap = snapFixture();
+  const tree = render(StarsCard, { snap, onRepo() {}, onSave() {} });
+  // ① 两份名单逐字对齐载荷
+  assert.deepEqual(kidsOf(findByClass(tree, 'gt-seg')[0], 'button').map(text), snap.stars.views.map((o) => o.label),
+    '视图分段器的签不是 stars.views 那一份');
+  assert.deepEqual(kidsOf(findByClass(tree, 'gt-seg')[1], 'button').map(text), snap.stars.sorts.map((o) => o.label),
+    '排序分段器的签不是 stars.sorts 那一份');
+  // ② 未开启：那一枚照摆但 disabled，签上换成「全站高星 · 未开启」，note 整句上屏
+  const offBtn = kidsOf(findByClass(tree, 'gt-seg')[0], 'button').at(-1);
+  assert.equal(offBtn.props.disabled, true, '出厂关着 ⇒ 那一枚灰着，但绝不藏（同 §7.6 那条 ready:false 开关照摆的律）');
+  assert.equal(text(offBtn), STARS_VIEW_DISABLED_LABELS.allStars, '灰着还要说清为什么；那半句只归 domain');
+  assert.ok(text(tree).includes(snap.stars.allStars.note), '未开启时那句"这一路是什么、开了会怎样"必须在屏上');
+  assert.equal(snap.stars.allStars.statLine, STARS_QUOTA_OFF_NOTE, '前提：关着时宿主给的那句就是「未开启」那句');
+  // ③ 统计那句逐字读载荷（客户端不数条、不拼句）
+  assert.equal(text(findByClass(tree, 'gt-card-n')[0]), snap.stars.headline);
+  assert.match(snap.stars.headline, /个仓库$/, '前提：那句里的条数由宿主数（界面自己数就是第二真相）');
+  // ④ 换载荷值 ⇒ 屏上跟着换（这才是"名单与句子只有一份"的硬判据）
+  const swapped = JSON.parse(JSON.stringify(snap.stars));
+  swapped.views = [{ id: 'all', label: '甲档', disabled: false }, { id: 'allStars', label: '乙档', disabled: false }];
+  swapped.sorts = [{ id: 'stars', label: '丙序' }];
+  swapped.headline = '丁句 9 个仓库';
+  swapped.starsAddedLabel = '戊列';
+  swapped.roundsPeakLabel = '己列';
+  swapped.starsLabel = '庚列';
+  const t2 = render(StarsCard, { snap: { ...snap, stars: swapped }, onRepo() {}, onSave() {} });
+  // ★ 只扫"名单与句子"那三处（分段器签 / 表头 / 统计那句），不扫整屏文本：
+  //   STARS_ALL_STARS_NOTE 里本来就有「这一档没有『在榜轮数 / 今日新增 / 峰值名次』这些概念」那句 —— 载荷原话上屏是应该的，
+  //   拿整屏文本扫会把"宿主那句照搬"误判成"客户端抄了名单"。
+  const owned = [
+    ...findByClass(t2, 'gt-seg').flatMap((s) => kidsOf(s, 'button').map(text)),
+    ...cellsOf(findAllType(t2, 'table')[0], 'thead').map(text),
+    ...findByClass(t2, 'gt-card-n').map(text),
+  ].join('|');
+  for (const s of ['甲档', '乙档', '丙序', '丁句 9 个仓库', '戊列', '己列']) {
+    assert.ok(owned.includes(s), `换了载荷屏上没换：缺「${s}」`);
+  }
+  // 反向：domain 那一份名单与列名（含 client-32 豁免掉的 '累计 ★'）在这一屏一处都不许残留
+  for (const s of [STARS_COL_STARS, STARS_COL_STARS_ADDED, STARS_COL_ROUNDS_PEAK,
+    ...Object.values(STARS_VIEW_LABELS), ...Object.values(STARS_SORT_LABELS)]) {
+    assert.ok(!owned.includes(s), `名单里残留宿主那一份的「${s}」⇒ 客户端自己抄了一份档位名或列名`);
+  }
+  // ⑤ 开着那一档时签上换回干净名字、且按得动（disabled 位跟着载荷走，不是客户端判的）
+  const onTree = render(StarsCard, { snap: snapFixture({}, { prefs: { allStarsEnabled: true } }), onRepo() {}, onSave() {} });
+  const onBtn = kidsOf(findByClass(onTree, 'gt-seg')[0], 'button').at(-1);
+  assert.equal(text(onBtn), STARS_VIEW_LABELS.allStars);
+  assert.equal(onBtn.props.disabled, false);
+  assert.ok(!text(onTree).includes(STARS_QUOTA_OFF_NOTE), '已经开启了还念那句"未开启"就是两句假话');
+  assert.ok(!hasCls(findByClass(onTree, 'gt-notice').filter((n) => text(n) === STARS_QUOTA_OFF_NOTE)[0] || { props: {} }, 'gt-notice'),
+    '开着时那句「未开启」的 note 整段撤掉（同一屏上不该同时有开启与未开启两句话）');
+});
+
+check('client-61 缺位与置灰：0 与「没有这一格」分得开，那一列整列置灰不藏列（addedCell / starsPick 各形状）', () => {
+  const lc = loadClient();
+  const { addedCell, starsPick, fmtCount } = lc.exports.__test;
+  const { StarsCard } = lc.exports.__test.components;
+  // ① addedCell 的形状：★ null 与 0 是两件事（返回值出自 vm 沙箱，先 `plain()` 剥回本 realm 再比）
+  assert.deepEqual(plain(addedCell(null, '—')), { text: '—', cls: 'gt-flat' });
+  assert.deepEqual(plain(addedCell(undefined, '—')), { text: '—', cls: 'gt-flat' });
+  assert.deepEqual(plain(addedCell('abc', '—')), { text: '—', cls: 'gt-flat' }, '坏值念缺位，不许 NaN 上屏');
+  assert.deepEqual(plain(addedCell(0, '—')), { text: '+0', cls: 'gt-flat' }, '「今天没涨」是真话，与缺位两种说法');
+  assert.deepEqual(plain(addedCell(512, '—')), { text: `+${fmtCount(512)}`, cls: 'gt-up' });
+  assert.deepEqual(plain(addedCell(-30, '—')), { text: `−${fmtCount(30)}`, cls: 'gt-down' }, '跌用 − 不用 ASCII 减号（跟榜面 deltaCell 同一套）');
+  assert.equal(addedCell(1500, '—').text, `+${fmtCount(1500)}`, '千以上走 fmtCount 那一套量级词，别自己拼 1500');
+  // ② starsPick：缺位垫底 + 档位过滤 + 那一档按星数降序（全是本地重排，不发请求）
+  const rows = [
+    { repo: 'a/x', group: 'regular', stars: 10, added: 5, rounds: 2 },
+    { repo: 'a/y', group: 'cooling', stars: null, added: null, rounds: 9 },
+    { repo: 'a/z', group: 'rising', stars: 999, added: 0, rounds: 0 },
+  ];
+  assert.deepEqual(plain(starsPick(rows, 'all', 'stars', []).map((r) => r.repo)), ['a/z', 'a/x', 'a/y'],
+    '拿不到的读数按 -1 参与比较 ⇒ 垫底（把 null 当 0 排序会把"没抓到"演成"星数少"）');
+  assert.deepEqual(plain(starsPick(rows, 'cooling', 'stars', []).map((r) => r.repo)), ['a/y'], '档位归属吃载荷的 group，界面不判档');
+  assert.deepEqual(plain(starsPick(rows, 'all', 'added', []).map((r) => r.repo)), ['a/x', 'a/z', 'a/y'],
+    '按今日新增排：added 缺位的行垫底，0 不算缺位');
+  assert.deepEqual(plain(starsPick(rows, 'all', 'rounds', []).map((r) => r.repo)), ['a/y', 'a/x', 'a/z']);
+  assert.equal(starsPick(null, 'all', 'stars', null).length, 0, '载荷缺位给空表，不炸');
+  const sr = [{ rank: 1, repo: 'b/low', stars: 100 }, { rank: 2, repo: 'b/high', stars: 900 }];
+  assert.deepEqual(plain(starsPick([], 'allStars', 'added', sr).map((r) => r.repo)), ['b/high', 'b/low'],
+    '那一档恒按 stars 降序（排序分段器不摆在这一屏，换 sort 也不该改这一屏的顺序）');
+  // ③ 薄快照：那一列整列置灰、每格给缺位，并把那句理由原样搬上屏（不藏列）
+  const thinSnap = snapFixture({}, { seenRows: new Map() });
+  assert.equal(thinSnap.stars.thin, true, '前提：没有榜史时宿主判的是薄快照');
+  const thinTree = render(StarsCard, { snap: thinSnap, onRepo() {}, onSave() {} });
+  const thinThs = cellsOf(findAllType(thinTree, 'table')[0], 'thead');
+  assert.ok(hasCls(thinThs[5], 'off'), '轮数不够时那一列的表头必须带 off（藏列的话那天攒够了会凭空长出来）');
+  const thinLast = kidsOf(kidsOf(findAllType(thinTree, 'table')[0], 'tbody')[0], 'tr')
+    .map((tr) => kidsOf(tr, 'td').at(5));
+  assert.ok(thinLast.length > 0 && thinLast.every((td) => hasCls(td, 'off') && text(td) === thinSnap.stars.missingCell),
+    '整列每格一起置灰并给缺位格，不许留空或写 0');
+  assert.ok(text(thinTree).includes(thinSnap.stars.thinNote), '那句理由（要满几轮、攒到几轮）必须说在屏上');
+  // ④ 缺位的星数：★ 血案点 —— fmtCount(null) 给 '0'，所以这一格必须先判 Number.isFinite
+  assert.equal(fmtCount(null), '0', '前提：fmtCount 本身把 null 说成 0 ⇒ 星数格必须自己挡住缺位');
+  const snap = snapFixture();
+  const cells = kidsOf(kidsOf(findAllType(render(StarsCard, { snap, onRepo() {}, onSave() {} }), 'table')[0], 'tbody')[0], 'tr')
+    .map((tr) => kidsOf(tr, 'td')).find((tds) => text(tds[1]).includes('g/gone'));
+  assert.ok(cells, '前提：夹具的回落行（本地没有星数、描述与语言）在屏上有一行');
+  assert.equal(text(cells[4]), snap.stars.missingCell.repeat(2), '回落行的累计星数与今日新增都念缺位');
+  assert.ok(!/0/.test(text(cells[4]) + text(cells[2]) + text(cells[3])), '念成 0 就是把"没抓到"演成"星数少 / 没描述"');
+  assert.equal(text(cells[3]), snap.stars.missingCell, '回落行连语言都没有 ⇒ 缺位格');
+  assert.equal(text(cells[5]), '6 轮#2', '回落行仍念榜史：轮数与峰值来自观测史，这一格是真有的读数');
+  // ⑤ 缺位格吃载荷值，不写死 '—'（客户端自己抄一个符号 = 宿主换字面就两处漂）
+  const alt = JSON.parse(JSON.stringify(snap.stars));
+  alt.missingCell = '◇';
+  const altCells = kidsOf(kidsOf(findAllType(render(StarsCard, { snap: { ...snap, stars: alt }, onRepo() {}, onSave() {} }), 'table')[0], 'tbody')[0], 'tr')
+    .map((tr) => kidsOf(tr, 'td')).find((tds) => text(tds[1]).includes('g/gone'));
+  assert.equal(text(altCells[3]), '◇', '换了载荷的缺位格屏上没换 ⇒ 界面写死了缺位符号');
+  // ⑥ bestRank 缺位时那半句整段不出现（不硬造 '#0'）
+  const noPeak = JSON.parse(JSON.stringify(snap.stars));
+  noPeak.rows = noPeak.rows.map((r) => ({ ...r, bestRank: 0 }));
+  const np = kidsOf(kidsOf(findAllType(render(StarsCard, { snap: { ...snap, stars: noPeak }, onRepo() {}, onSave() {} }), 'table')[0], 'tbody')[0], 'tr')
+    .map((tr) => kidsOf(tr, 'td').at(5));
+  assert.ok(np.every((td) => /轮$/.test(text(td)) && !text(td).includes('#')), '峰值名次拿不到时不摆 #0');
+  // ⑦ CSS 侧：置灰与那两个"并进"小字的规则原文（类名挂着而屏上是灰的 = 规则没写）
+  const css = (clientSrc().match(/const CSS = `([\s\S]*?)`;/) || [])[1] || '';
+  assert.match(css, /\.gt-tbl td\.off,\.gt-tbl th\.off\{color:var\(--gt-faint\);background:repeating-linear-gradient/,
+    '整列置灰必须有斜纹底 + 弱字色：只写 color 会被读成"这格是 0"');
+  assert.match(css, /\.gt-delta\{margin-left:6px;font-size:11px\}/, '今日新增并进总星那一格的小字规则缺失 ⇒ 两个数糊成一句');
+  assert.match(css, /\.gt-faint2\{color:var\(--gt-faint\);margin-left:5px\}/, '峰值名次并进在榜那一格的小字');
+  // ⑧ 置灰的判据只有载荷那一份：界面拿 `roundsAvailable` 复算就是第二真相 ⇒ 两份故意矛盾的载荷各钉一个方向
+  const grayOn = JSON.parse(JSON.stringify(snap.stars));
+  grayOn.thin = true; grayOn.roundsAvailable = 99; grayOn.thinNote = '哨兵：这一列的证据不够';
+  const grayOnTree = render(StarsCard, { snap: { ...snap, stars: grayOn }, onRepo() {}, onSave() {} });
+  const onTds = kidsOf(kidsOf(findAllType(grayOnTree, 'table')[0], 'tbody')[0], 'tr').map((tr) => kidsOf(tr, 'td').at(5));
+  assert.ok(hasCls(cellsOf(findAllType(grayOnTree, 'table')[0], 'thead')[5], 'off')
+    && onTds.length > 0 && onTds.every((td) => hasCls(td, 'off') && text(td) === grayOn.missingCell),
+    '载荷说 thin=true 就得整列置灰 —— 那个数够不够门由宿主判，界面复算就是把判定搬回屏上');
+  assert.ok(text(grayOnTree).includes(grayOn.thinNote), '薄快照那句理由吃载荷原文，不自己拼');
+  const grayOff = JSON.parse(JSON.stringify(snap.stars));
+  grayOff.thin = false; grayOff.roundsAvailable = 1;
+  const grayOffTree = render(StarsCard, { snap: { ...snap, stars: grayOff }, onRepo() {}, onSave() {} });
+  const offTds = kidsOf(kidsOf(findAllType(grayOffTree, 'table')[0], 'tbody')[0], 'tr').map((tr) => kidsOf(tr, 'td').at(5));
+  assert.ok(!hasCls(cellsOf(findAllType(grayOffTree, 'table')[0], 'thead')[5], 'off')
+    && offTds.every((td) => !hasCls(td, 'off') && /轮/.test(text(td))),
+    '载荷说 thin=false 就不许置灰：界面自己判会把"最深那位只上了 1 轮"演成不够格，而这一格读数本来是真的');
+  // ⑦ 续（CSS 原文的最后一条，仍属上面那段置灰判据）
+  assert.match(css, /\.gt-seg button:disabled:not\(\.on\)\{/, '缺 :not(.on) 会把"当前那枚"（同时 disabled）顶成条纹灰 ⇒ 分段器看不出选中档');
+});
+
+check('client-62 中文列沿用榜面那套混合视图；故障 / 没取回 / 空表 / 没存储四种"没内容"各说各的', () => {
+  const { StarsCard } = loadClient().exports.__test.components;
+  const snap = snapFixture();
+  const tree = render(StarsCard, { snap, onRepo() {}, onSave() {} });
+  // ① 命中行显示译文、悬停看得见原文与落款（同一张命中表，榜面译过就不该再花一发）
+  const d0 = starsCells(tree, 0)[2];
+  assert.equal(text(d0), DESC_ZH_ROWS[0][2]);
+  assert.ok(d0.children[0].props.title.includes(`原文：${DESC_ZH_ROWS[0][1]}`));
+  assert.ok(d0.children[0].props.title.includes(DESC_ZH_NOTE), '落款那句来源 + 时间戳读的是载荷，客户端不自己编日期');
+  // ② 没命中的行显示原文；★ 这一屏的行不带 langColor ⇒ 色点走 CSS 那一份灰，不内联造色（§8.8 落地改口 12）
+  assert.equal(text(starsCells(tree, 1)[2]), '一个描述');
+  assert.equal(findAllType(starsCells(tree, 1)[2], 'i').length, 0, '描述格里不该有色点（色点只归语言那一格）');
+  assert.equal(findAllType(tree, 'i').length, findAllType(tree, 'i').filter((n) => n.props.style === undefined).length,
+    '语言色点不许内联带色：这一屏的星行没有 langColor，硬凑就是把猜的当读数');
+  // ③ 那一档列收了，中文列仍走同一套（这一批还没补译 ⇒ 显示原文）
+  const allSnap = snapFixture({}, { prefs: { allStarsEnabled: true }, search: searchBatchOf([searchRowOf(1, 'freecodecamp/freecodecamp')]) });
+  assert.equal(text(starsCells(starsWith('allStars', allSnap).tree, 0)[2]), 'A plain english line');
+  // ③′ ★ 10-10 改判：那一档开着 ⇒ 宿主已把它的行并进现译集合，库里逐字命中的那句在屏上就是中文（客户端仍只取值）
+  const hitRow = searchRowOf(1, 'freecodecamp/freecodecamp');
+  const siteRows = [{ repo: hitRow.repo, kind: 'desc', src: transSrcKey(hitRow.desc), zh: '那一档补出来的中文', at: atOff(-120000), chars: 20, engine: 'host_llm' }];
+  const onTree = starsWith('allStars', snapFixture({}, { prefs: { allStarsEnabled: true }, search: searchBatchOf([hitRow]), transRows: siteRows })).tree;
+  const onCell = starsCells(onTree, 0)[2];
+  assert.equal(text(onCell), '那一档补出来的中文', '那一档的行命中 ⇒ 中文上屏：hits 的键表由宿主决定，客户端不判"这行属于哪一屏"');
+  assert.ok(onCell.children[0].props.title.includes(`原文：${hitRow.desc}`), '悬停仍看得见 GitHub 那句原文');
+  assert.ok(onCell.children[0].props.title.includes(DESC_ZH_LIVE_NOTE), '落款念的是 domain 那一句现译说明（两屏共用同一句，客户端不另写一套）');
+  // ③″ 同一张 trans 表、同一批行，开关拨回关 ⇒ 那句中文立刻下屏（参与集合里压根没有它）
+  const offTree = starsWith('allStars', snapFixture({}, { prefs: { allStarsEnabled: false }, search: searchBatchOf([hitRow]), transRows: siteRows })).tree;
+  assert.equal(text(starsCells(offTree, 0)[2]), 'A plain english line',
+    '★ 关掉那一档 ⇒ 宿主不再给它的 hits，屏上退回原文（客户端不许自己拿 transRows 补出中文，那是第二份真相）');
+  // ④ 故障：本轮没取回 ⇒ 一句 err，上一批的行照旧在屏上（§1 那条「上一批照常显示并挂一句故障」）
+  const bad = snapFixture({}, { prefs: { allStarsEnabled: true },
+    search: searchBatchOf([searchRowOf(1, 'freecodecamp/freecodecamp')], { ok: false, error: '限额用尽（403，重置于 10-09 11:20）' }) });
+  const badTree = starsWith('allStars', bad).tree;
+  const err = findByClass(badTree, 'gt-notice-err')[0];
+  assert.ok(err, '故障必须在屏上说，不是安静地少一行');
+  assert.ok(text(err).includes('限额用尽（403，重置于 10-09 11:20）'), '那句原因念的是落库那一行的原样回执');
+  assert.equal(kidsOf(kidsOf(findAllType(badTree, 'table')[0], 'tbody')[0], 'tr').length, 1,
+    '上一批的行照旧在屏上（撤掉它才是把"这一轮坏了"演成"没人高星"）');
+  // ⑤ 开了但本机从没取回过：那一句是「已开启、还没取回」，与空表那句分开
+  const waiting = snapFixture({}, { prefs: { allStarsEnabled: true }, search: null });
+  assert.equal(waiting.stars.allStars.statLine, STARS_QUOTA_WAITING_NOTE, '前提：没落库时宿主给的是那句等待');
+  assert.ok(text(waiting.stars.allStars.statLine) && text(starsWith('allStars', waiting).tree).includes(STARS_QUOTA_WAITING_NOTE));
+  // ⑥ 这一档真没行 ⇒ 空表那句是界面措辞，但 colSpan 必须跟着当前列数（列收了还写 7 就漏一格）
+  const emptyThin = snapFixture({}, { seenRows: new Map() });
+  const emptyTd = cellsOf(findAllType(starsWith('regular', emptyThin).tree, 'table')[0], 'tbody')[0];
+  assert.equal(emptyTd.props.colSpan, 7, '薄夹具没有常客档的行 ⇒ 空表，colSpan 要等于当前列数');
+  assert.match(text(emptyTd), /没有符合条件的仓库/);
+  const emptyAll = starsWith('allStars', snapFixture({}, { prefs: { allStarsEnabled: true }, search: searchBatchOf([]) })).tree;
+  assert.equal(cellsOf(findAllType(emptyAll, 'table')[0], 'tbody')[0].props.colSpan, 6, '那一档空表时 colSpan 跟六列走');
+  // ⑦ 能力边界 ①：没存储时那句是 STARS_NO_STORE_NOTE，不是空表那句
+  const noStore = snapFixture({}, { storageAvailable: false });
+  assert.equal(noStore.stars.headline, STARS_NO_STORE_NOTE, '前提：宿主在装配层就给那一句');
+  assert.ok(text(render(StarsCard, { snap: noStore, onRepo() {}, onSave() {} })).includes(STARS_NO_STORE_NOTE),
+    '两件事不许演成一件：没有榜史 ≠ 榜上没人');
+});
+
+check('client-63 那一档的开关：出去的是严格布尔，开启绝不跳档、关掉才把人送回去', () => {
+  const { StarsCard } = loadClient().exports.__test.components;
+  const snap = snapFixture();
+  // ① 未开启时点开关 ⇒ onSave 只带那一个键的严格布尔，且**一个状态都不动**（开启 ≠ 跳档，§0 本轮 ⑧）
+  //   ★ 这一趟的 view 故意停在 'allStars'：若写成第一档，"开启时也跳档"那个变异就空跑了（条件本来不成立 ⇒ 屏幕不动也测不出）。
+  const a = loadClient(PAYLOAD, { states: ['allStars'] });
+  const saved = [];
+  const treeA = render(a.exports.__test.components.StarsCard, { snap, onRepo() {}, onSave: (p) => saved.push(p) });
+  findByClass(treeA, 'gt-btn')[0].props.onClick();
+  assert.deepEqual(plain(saved), [{ allStarsEnabled: true }], '出去的就是那一个键的严格布尔（多带一格 = 替宿主做决定）');
+  assert.deepEqual(a.stateSets, [], '开启时把视图跳到那一档 = 让人以为刚点的是个视图按钮');
+  // ② 已开启且人停在那一档时点关闭 ⇒ 存 false，并把视图送回**载荷名单的第一档**（档位 id 用哨兵，硬编码 'all' 会红）
+  const firstId = '哨兵首档';
+  const onSnap = snapFixture({}, { prefs: { allStarsEnabled: true } });
+  const swapped = JSON.parse(JSON.stringify(onSnap.stars));
+  swapped.views = [{ id: firstId, label: '首档', disabled: false },
+    { id: 'allStars', label: STARS_VIEW_LABELS.allStars, disabled: false }];
+  const b = loadClient(PAYLOAD, { states: ['allStars'] });
+  const savedB = [];
+  const treeB = render(b.exports.__test.components.StarsCard, {
+    snap: { ...onSnap, stars: swapped }, onRepo() {}, onSave: (p) => savedB.push(p),
+  });
+  b.stateSets.length = 0;
+  findByClass(treeB, 'gt-btn')[0].props.onClick();
+  assert.deepEqual(plain(savedB), [{ allStarsEnabled: false }]);
+  assert.deepEqual(b.stateSets.map((s) => [s.idx, s.next]), [[0, firstId]],
+    '关掉后把视图送回 stars.views 的第一档（那一枚这时 disabled，不送人就困在这一屏）');
+  // ③ 保存中那枚开关按钮 disabled；没在保存时按得动
+  assert.equal(findByClass(render(StarsCard, { snap, saving: true, onRepo() {}, onSave() {} }), 'gt-btn')[0].props.disabled, true);
+  assert.equal(findByClass(render(StarsCard, { snap, onRepo() {}, onSave() {} }), 'gt-btn')[0].props.disabled, false);
+  // ④ 视图分段器的点击只换本地状态：不写 prefs、不触发检查（§0「选择不许有副作用」）
+  const d = loadClient(PAYLOAD, { states: ['all'] });
+  const savedD = [];
+  const treeD = render(d.exports.__test.components.StarsCard, { snap, onRepo() {}, onSave: (p) => savedD.push(p) });
+  kidsOf(findByClass(treeD, 'gt-seg')[0], 'button').forEach((btn) => btn.props.onClick());
+  assert.deepEqual(savedD.length, 0, '换档写了 prefs = 选择有副作用');
+  assert.deepEqual(d.stateSets.map((s) => [s.idx, s.next]), snap.stars.views.map((o, i) => [0, o.id]),
+    '每枚按钮发的是自己那一档的 id（且发的是视图那一路的状态，不是排序）');
+  // ⑤ 仓库名走的是同一根 onRepo（榜面那条律在这里同样作数：出网只在点仓库名那一下）
+  const clicked = [];
+  const treeE = render(StarsCard, { snap, onRepo: (r) => clicked.push(r), onSave() {} });
+  const link = findAllType(treeE, 'a')[0];
+  link.props.onClick({ button: 0, ctrlKey: false, metaKey: false, shiftKey: false, altKey: false });
+  assert.deepEqual(clicked, ['addyosmani/agent-skills'], '第一行的仓库名点开的是那一行自己的主键（小写归一那份）');
+  assert.equal(link.props.className, 'gt-repo');
 });
 
 await runAll('client');

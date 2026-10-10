@@ -7,9 +7,9 @@
  */
 import { check, runAll, assert, makeFakeFacility } from './_helpers.mjs';
 import {
-  createStateStore, createEventStore, createSeenStore, createPrefsStore, createRepoCacheStore, createTransStore, RECORDS_ERROR,
+  createStateStore, createEventStore, createSeenStore, createPrefsStore, createRepoCacheStore, createTransStore, createSearchStore, RECORDS_ERROR,
 } from '../lib/stores.js';
-import { BOARDS, DEFAULT_PREFS, GHT_DOMAIN, REPO_CACHE_MAX, REPO_CACHE_HOURS, REPO_ERROR_LABELS, TRANS_MAX, LLM_KINDS, PREF_CRED_FIELDS } from '../lib/domain.js';
+import { BOARDS, DEFAULT_PREFS, GHT_DOMAIN, REPO_CACHE_MAX, REPO_CACHE_HOURS, REPO_ERROR_LABELS, TRANS_MAX, LLM_KINDS, PREF_CRED_FIELDS, SEARCH_ROW_SHAPE } from '../lib/domain.js';
 
 /* ---------------- 造合法行的最小素材 ---------------- */
 const boardRow = (over = {}) => ({
@@ -38,6 +38,21 @@ const transRow = (over = {}) => ({
   repo: 'tester-army/e2e', kind: 'desc', src: 'e2e testing', zh: '端到端测试', at: 1000, chars: 5, ...over,
 });
 
+/**
+ * 全站高星一行：**逐字抄自真回包夹具** `test/fixtures/repo-search.json` 的第 4 条（`rank` 就是它在 `items` 里的位次）。
+ * ★ `name` 留 GitHub 原样的大小写、`repo` 一律小写 —— 这一对差值就是主键律的活靶子，换成全小写的仓库名这行就白抄了。
+ */
+const searchRow = (over = {}) => ({
+  rank: 4, repo: 'freecodecamp/freecodecamp', name: 'freeCodeCamp/freeCodeCamp',
+  desc: "freeCodeCamp.org's open-source codebase and curriculum. Learn math, programming, and computer science for free.",
+  lang: 'TypeScript', stars: 456734, ...over,
+});
+/** 一批发出去的 search 行（列名沿用 domain 的 `SEARCH_ROW_SHAPE`，用例里不重抄字段清单）。 */
+const searchBatch = (over = {}) => ({
+  at: 1000, lastFetchAt: 1000, ok: true, error: '', transport: false,
+  rows: [searchRow()], rateLeft: 9, rateLimit: 10, rateResetAt: 4000, rateAuthed: false, ...over,
+});
+
 function mk({ now = () => 1000 } = {}) {
   const facility = makeFakeFacility();
   const logs = { warn: [] };
@@ -51,6 +66,7 @@ function mk({ now = () => 1000 } = {}) {
     prefs: createPrefsStore(opts),
     repo: createRepoCacheStore(opts),
     trans: createTransStore(opts),
+    search: createSearchStore(opts),
   };
 }
 
@@ -61,17 +77,17 @@ function advancing(start = 1000) {
 }
 
 /* ---------------- 域与登记表 ---------------- */
-check('域声明：gh_trending 名字与六表都过宿主正则，version 停在 1', () => {
+check('域声明：gh_trending 名字与七表都过宿主正则，version 停在 1', () => {
   assert.equal(GHT_DOMAIN.name, 'gh_trending');   // 带连字符的插件名不能当域名（宿主 ^[a-z][a-z0-9_]*$）
-  assert.deepEqual(Object.keys(GHT_DOMAIN.tables).sort(), ['events', 'prefs', 'repo', 'seen', 'state', 'trans']);
+  assert.deepEqual(Object.keys(GHT_DOMAIN.tables).sort(), ['events', 'prefs', 'repo', 'search', 'seen', 'state', 'trans']);
   // ★ 抬版本 = 本机那份 gh_trending.json 整个打不开：整档布局按 stored !== descriptor.version 直接抛
   //   version-mismatch（dsh-storage-json/lib/index.js:102），compatibleVersions 只对 per-record 布局生效。
   //   加一张表不需要抬版本 —— 文件里没有这张表就是空表起步（同文件 :111）。
-  //   10-06 加 `trans`（译文表）时按这条律走过：六张表、version 仍是 1。
+  //   10-06 加 `trans`（译文表）时按这条律走过；10-08 加 `search`（全站高星那一批）时同一条律原样走。
   assert.equal(GHT_DOMAIN.version, 1, '要抬版本请先给出"老库怎么迁移"的证据，否则就是拿用户的榜史换版本号');
 });
 
-check('六表同域：同一设施只 open 一次（重复 open = already-open 血案）', async () => {
+check('七表同域：同一设施只 open 一次（重复 open = already-open 血案）', async () => {
   const s = mk();
   await s.state.write('daily', stateRow('daily'));
   await s.events.append({ kind: 'baseline', detail: 'x' });
@@ -517,6 +533,98 @@ check('trans：行数超过上限按最老的裁（模型译文堆到几百条�
   assert.equal(TRANS_MAX > 3, true, '出厂上限是宽松档，用例才敢用小档注入');
 });
 
+/* ---------------- 全站高星那一批（第二十三轮：search 表） ---------------- */
+check('search：单行覆盖写 —— 第二次写换掉整批，库里永远只有一行 batch', async () => {
+  const s = mk();
+  assert.equal(await s.search.read(), null, '没写过就是 null（"这一档从没取回过"与"取回过但空批"必须是两件事）');
+  await s.search.write(searchBatch());
+  await s.search.write(searchBatch({ at: 5000, rows: [searchRow({ repo: 'x/y', name: 'X/Y', stars: 200000 })] }));
+  const row = await s.search.read();
+  assert.equal(row.at, 5000);
+  assert.equal(row.rows.length, 1);
+  assert.equal(row.rows[0].repo, 'x/y');
+  assert.equal(s.facility.rowCount('gh_trending', 'search'), 1, '这张表只许一行（多 key 就是"哪一批作数"的第二份真相）');
+});
+
+check('search：坏轮冻结由调用方写、这里照读 —— at 停在上一批的成功时刻，rows 不清空', async () => {
+  const s = mk();
+  const good = searchBatch({ at: 1000 });
+  await s.search.write(good);
+  // 失败轮：ok=false + error + transport，at 仍是**上一次成功**的时刻，rows 是上一批那一份（spec §8.8「失败」那条）
+  await s.search.write(searchBatch({ at: 1000, lastFetchAt: 9000, ok: false, error: '连不上', transport: true }));
+  const row = await s.search.read();
+  assert.equal(row.ok, false);
+  assert.equal(row.transport, true);
+  assert.equal(row.at, 1000, 'at 是"最后一次成功取回"，失败轮不许把它推成新时刻（那会让「上次取回」说假话）');
+  assert.equal(row.lastFetchAt, 9000);
+  assert.equal(row.rows.length, 1, '坏轮不空表：上一批照常显示，与三榜那条冻结读法一字不差');
+});
+
+check('search：schema 挡脏行（rows 里缺 stars / 额度那几格只认数字）', async () => {
+  const s = mk();
+  await assert.rejects(() => s.search.write(searchBatch({ rows: [{ rank: 1, repo: 'a/b', name: 'A/B' }] })),
+    (e) => e.code === RECORDS_ERROR.INVALID, 'BOARD 行那样要求 stars，search 行同样得给 stars');
+  await assert.rejects(() => s.search.write(searchBatch({ at: undefined })),
+    (e) => e.code === RECORDS_ERROR.INVALID, 'at 是 requiredNumber');
+  // 未声明字段被丢掉（不许把回包整坨塞进 KV）
+  const row = await s.search.write(searchBatch({ owner: { login: 'freeCodeCamp' } }));
+  assert.equal('owner' in row, false, 'schema 之外的回包字段进不了库');
+  // 行形状与 domain 那张表逐字对齐：加字段只能改 domain，不能只在用例里出现
+  assert.deepEqual(Object.keys(searchRow()).sort(), Object.keys(SEARCH_ROW_SHAPE).sort());
+});
+
+check('search：无设施时 available=false，读写都报 UNAVAILABLE（runner 据此走"不发"那道闸）', async () => {
+  const s = createSearchStore({ getFacility: () => null });
+  assert.equal(s.available, false);
+  await assert.rejects(() => s.read(), (e) => e.code === RECORDS_ERROR.UNAVAILABLE);
+  await assert.rejects(() => s.write(searchBatch()), (e) => e.code === RECORDS_ERROR.UNAVAILABLE);
+});
+
+/* ---------------- 观测史那两格（第二十三轮：roundsTotal / bestRank） ---------------- */
+check('seen：同一轮三榜同现只 +1（check 对三榜用的是同一个 t0，判据是 at 与 lastAt 相等）', async () => {
+  const s = mk();
+  const at = 5000;
+  for (const [board, rank] of [['daily', 7], ['weekly', 2], ['monthly', 9]]) {
+    await s.seen.touch({ repo: 'a/b', name: 'A/B', repoId: 1, board, at, rank });
+  }
+  const row = (await s.seen.readAll()).get('a/b');
+  assert.equal(row.roundsTotal, 1, '一轮内上满三榜 = 一轮，不是三轮');
+  assert.equal(row.bestRank, 2, '同轮跨榜取最小名次');
+  assert.deepEqual(row.boards, ['daily', 'weekly', 'monthly']);
+});
+
+check('seen：跨轮继续 +1，bestRank 只降不升；rank 缺位或非法时两个数都不许被污染', async () => {
+  const s = mk();
+  await s.seen.touch({ repo: 'a/b', name: 'A/B', repoId: 1, board: 'daily', at: 1000, rank: 5 });
+  await s.seen.touch({ repo: 'a/b', name: 'A/B', repoId: 1, board: 'daily', at: 2000, rank: 9 });
+  let row = (await s.seen.readAll()).get('a/b');
+  assert.equal(row.roundsTotal, 2);
+  assert.equal(row.bestRank, 5, '这一轮名次更差（9），历史最好那位不能被换掉');
+  // 缺 rank / 脏 rank：不加格、不改 best，但轮数照样 +1（"在榜"这件事与"第几名"是两件事）
+  await s.seen.touch({ repo: 'a/b', name: 'A/B', repoId: 1, board: 'weekly', at: 3000 });
+  await s.seen.touch({ repo: 'a/b', name: 'A/B', repoId: 1, board: 'weekly', at: 4000, rank: 0 });
+  await s.seen.touch({ repo: 'a/b', name: 'A/B', repoId: 1, board: 'weekly', at: 5000, rank: 'abc' });
+  row = (await s.seen.readAll()).get('a/b');
+  assert.equal(row.roundsTotal, 5);
+  assert.equal(row.bestRank, 5, 'rank=0 / 非数字都不许把最好名次写成 0（那会把"不知道"演成"第一名"）');
+});
+
+check('seen：上一版写下的那一行（无这两格）第一次 touch 后从 1 起算，读侧拿 0 补默认', async () => {
+  const s = mk();
+  await s.seen.readAll();   // 先开域（seed 要求域已打开，同 prefs 那条旧库用例的走法）
+  s.facility.seed('gh_trending', 'seen', 'a/b', {
+    repo: 'a/b', name: 'A/B', repoId: 1, firstAt: 900, firstBoard: 'daily',
+    lastAt: 1000, lastBoard: 'daily', boards: ['daily'],
+  });
+  const before = (await s.seen.readAll()).get('a/b');
+  assert.equal('roundsTotal' in before, false, '读侧不造格：缺就是缺（补默认在 lib/stars.js 那一处）');
+  await s.seen.touch({ repo: 'a/b', name: 'A/B', repoId: 1, board: 'weekly', at: 2000, rank: 3 });
+  const after = (await s.seen.readAll()).get('a/b');
+  assert.equal(after.roundsTotal, 1, '旧行没有计数 ⇒ 从"这次算一轮"起，而不是 undefined 一路传到界面');
+  assert.equal(after.bestRank, 3);
+  assert.equal(after.firstAt, 900, 'firstAt 恒不动（原有那条律原样作数）');
+});
+
 /* ---------------- 写队列 ---------------- */
 check('并发：同表多写串行落库，顺序确定且失败不堵队列', async () => {
   const s = mk();
@@ -567,6 +675,14 @@ check('★ schema 的 open 校验：每张表都必须吃得下"上一版库存�
     trans: {  // 第九轮之前的行：没有 engine
       repo: 'some/one', kind: 'desc', src: 'x', zh: '中文', at: 1_700_000_000_000,
     },
+    // ★ 第二十三轮自查（同一把尺子的第四个样本）：`seen` 表 10-08 之前的真实行就是这个形状 ——
+    //   八格齐全、没有 roundsTotal / bestRank。写成 required 会让用户攒下的**整张观测史**在 open 里挡死
+    //   ⇒ 明星那一屏读不出榜史还是小事，三榜全红「存储不可用」才是后果（同 10-07 那笔账）。
+    seen: {
+      repo: 'some/one', name: 'Some/One', repoId: 123456,
+      firstAt: 1_690_000_000_000, firstBoard: 'daily',
+      lastAt: 1_700_000_000_000, lastBoard: 'weekly', boards: ['daily', 'weekly'],
+    },
   };
   for (const [table, row] of Object.entries(legacy)) {
     const schema = GHT_DOMAIN.tables[table].valueSchema;
@@ -586,6 +702,17 @@ check('★ schema 的 open 校验：每张表都必须吃得下"上一版库存�
     'ghToken 必须是 optional：缺它的是合法的上一版库存，不是坏行');
   assert.equal('ghToken' in GHT_DOMAIN.tables.prefs.valueSchema.parse(prevRow), false,
     'parse 不凭空造格（补默认只由 clampPrefs 那一处做）');
+  // ★ 第二十三轮那三格同一条律自查：`allStarsEnabled`（prefs）与 `roundsTotal` / `bestRank`（seen）
+  //   都必须是 optional，且 parse **不凭空造格** —— 缺它们的行是合法的上一版库存。
+  //   补默认只由两处做：prefs 走 `clampPrefs`，seen 走**读取侧**（`lib/stars.js` 读成 0），schema 一律不插手。
+  delete prevRow.allStarsEnabled;
+  assert.doesNotThrow(() => GHT_DOMAIN.tables.prefs.valueSchema.parse(prevRow),
+    'allStarsEnabled 必须是 optional：缺它的 prefs 行是第二十三轮之前写下的那一行');
+  const noFlag = GHT_DOMAIN.tables.prefs.valueSchema.parse(prevRow);
+  assert.equal('allStarsEnabled' in noFlag, false, 'prefs 的 parse 不造 allStarsEnabled（补默认只由 clampPrefs 那一处做）');
+  const seenParsed = GHT_DOMAIN.tables.seen.valueSchema.parse(legacy.seen);
+  assert.equal('roundsTotal' in seenParsed, false, 'seen 的 parse 不造 roundsTotal（缺格由读取侧读成 0）');
+  assert.equal('bestRank' in seenParsed, false, 'seen 的 parse 不造 bestRank（同上）');
 });
 
 await runAll('store');
