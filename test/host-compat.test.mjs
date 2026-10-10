@@ -17,7 +17,7 @@ import { check, runAll, assert, makeFakeFacility, makeFakeCtx, makeReq, makeRes,
 import { apply, resolveConfig, DEFAULT_CONFIG, name as PLUGIN_NAME, inject as HARD_INJECT, __peek } from '../index.js';
 import { GLOBAL_KEY, ROUTE_PREFIX } from '../lib/api.js';
 import { BOARDS, BOARD_LABELS, BOARD_ADDED_LABELS, CHECK_INTERVALS, CHECK_INTERVAL_LABELS,
-  REPO_CACHE_HOURS, repoCacheTtlMs, REPO_CACHE_TTL_MS,
+  DETAIL_RECHECK_MS, DETAIL_STAMP_LABELS,
   EVENT_KIND_LABELS, EVENT_KINDS, DEFAULT_PREFS, TRENDING_SOURCE_NOTE, LANG_CHECK, CROSS_MIN_BOARDS,
   PROXY_MODES, TRANSLATE_CRED_FIELDS, TRANSLATE_CRED_ALL,
   // ★ 第二十一轮：凭据清单在 domain 派生成一份（含 GitHub 令牌那把）；判据扫的是派生后那份，
@@ -333,7 +333,7 @@ check('hc-10 全服务落地：路由注册在 /gh-trending 前缀，且是 kind
 /** index-inject 载荷的键全集（客户端读到的每一项都得有人给）。 */
 const PAYLOAD_KEYS = ['panelId', 'label', 'panelOrder', 'routePrefix', 'api', 'capabilities', 'capabilityRows',
   'boards', 'boardLabels', 'boardAddedLabels', 'sourceNote', 'langCheck', 'crossMin',
-  'intervals', 'intervalLabels', 'cacheHours', 'cacheHourLabels', 'proxyModes', 'proxyModeLabels', 'proxyModeHints', 'proxyUrlMax',
+  'intervals', 'intervalLabels', 'detailStampLabels', 'proxyModes', 'proxyModeLabels', 'proxyModeHints', 'proxyUrlMax',
   'topNRange', 'keepEventsRange', 'eventKindLabels', 'defaults', 'builtAt'];
 
 check('hc-11 入口载荷：webServer 到位才推，字段一个不少', () => {
@@ -360,11 +360,12 @@ check('hc-11 入口载荷：webServer 到位才推，字段一个不少', () => 
   assert.deepEqual(v.eventKindLabels, EVENT_KIND_LABELS);
   assert.deepEqual(Object.keys(v.eventKindLabels).sort(), [...EVENT_KINDS].sort(), '事件枚举与片名表必须同集合');
   assert.deepEqual(v.intervals, CHECK_INTERVALS);
-  // 详情缓存时长（第十二轮）：档位与中文标签都从 domain 走，客户端一格都不自己写
-  assert.deepEqual(v.cacheHours, REPO_CACHE_HOURS);
-  assert.deepEqual(Object.keys(v.cacheHourLabels).sort(), REPO_CACHE_HOURS.map(String).sort(),
-    '档位话术表与档位集合必须同集合（少一档 = 分段器上一个空按钮）');
-  assert.ok(REPO_CACHE_HOURS.includes(v.defaults.repoCacheHours), '出厂那一档必须在档位里，否则设置页一进来就没有选中项');
+  // ★ 第二十七轮：这里原来是第十二轮那两格（档位名单 + 档位话术表），随那一档整链撤掉 ——
+  //   详情改条件请求以后没有任何"时长"可选，载荷里再给一份档位就是界面上摆不出来的第二份真相。
+  assert.deepEqual(v.detailStampLabels, DETAIL_STAMP_LABELS, '那句落款的两个词只在 domain 一份，装配处只递名字');
+  assert.deepEqual(Object.keys(v.detailStampLabels).sort(), ['body', 'revalidated'], '载荷的形状漂了：客户端读的是这两格');
+  assert.equal('cacheHours' in v, false, '载荷还在推档位名单 ⇒ 撤档只撤了界面，链没拆完');
+  assert.equal('repoCacheHours' in v.defaults, false, '出厂偏好里还留着那一格');
   assert.deepEqual(v.proxyModes, PROXY_MODES);
   assert.deepEqual(Object.keys(v.proxyModeLabels).sort(), [...PROXY_MODES].sort(), '三档的话术表与档位集合必须同集合');
   assert.deepEqual(Object.keys(v.proxyModeHints).sort(), [...PROXY_MODES].sort());
@@ -601,22 +602,33 @@ check('hc-19 ★密钥边界：四把密钥（三家翻译 + 第二十一轮那�
   await flush(5);
 });
 
-check('hc-20 详情 TTL 的接线（第十二轮）：装配处只交「现取现算」，不许抄一个毫秒数', () => {
+check('hc-20 详情窗口的接线（第二十七轮）：装配处不再交 TTL 注入点，60 秒那一格与那句落款的词各只有一份出处', () => {
   const idx = codeOf('index.js');
-  assert.match(idx, /getTtlMs:\s*\(\)\s*=>\s*repoCacheTtlMs\(getPrefs\(\)\.repoCacheHours\)/,
-    'index.js 没把 TTL 接成按偏好现取现算 ⇒ 用户在设置页改档，真跑的窗口还是装配时那一个');
-  assert.doesNotMatch(idx, /\bttlMs\s*:/, '装配处出现 ttlMs: = 把毫秒锁在装配时，改档要到宿主重启才认，而界面上已经显示成新档（两份真相）');
-  // 出厂那一档与出厂那个毫秒必须同源（两处各写一遍就会漂）
-  assert.equal(repoCacheTtlMs(DEFAULT_PREFS.repoCacheHours), REPO_CACHE_TTL_MS);
-  assert.equal(REPO_CACHE_HOURS.length, 4, '档位是封闭集合：加一档要连着看设置页那段话与 hc-11 的话术表');
-  // 首次装配那一发：prefsView 的种子值里就得有这一格（reloadPrefs 是异步的，中间点详情不该读成 undefined）
-  assert.match(idx, /repoCacheHours:\s*DEFAULT_PREFS\.repoCacheHours/, 'prefsView 初始值漏了这一格 ⇒ 装配与首次读库之间 TTL 落回默认，界面显示的却是档位表');
+  assert.doesNotMatch(idx, /getTtlMs|repoCacheTtlMs/,
+    'index.js 还在按偏好现取一个 TTL ⇒ 档位已经撤了，这个注入点没有喂主，留着是第二份真相');
+  assert.doesNotMatch(idx, /\bttlMs\s*:/,
+    '装配处出现 ttlMs: = 把毫秒锁在装配时（第十二轮批评过的那个形状，撤档之后更不该留）');
+  // 界面那句落款的两个词只在 domain 一份，装配处只递名字；抄进 index 或 client 就是第二个出处。
+  assert.match(idx, /detailStampLabels:\s*DETAIL_STAMP_LABELS/, '载荷没把那一格递出去 ⇒ 客户端读不到词，那句落款会整句消失');
+  assert.doesNotMatch(idx, /正文取回于|刚核对过/, 'index.js 抄了那两个词');
+  assert.doesNotMatch(codeOf('client.js'), /正文取回于|刚核对过/, 'client.js 自己写了那两个词 ⇒ 同一句话有了第二处');
+  // ★ 撤档要撤干净：整条链（domain 定义 / stores 钳制 / api 校验 / index 载荷 / 界面那一行）在**代码位**一处都不认得这个键。
+  //   注释位留着那笔账的去处（10-07 的血案写在 schema 那一段），所以扫的是 codeOf。
+  const leftover = HOST_FILES.filter((f) => /repoCacheHours|REPO_CACHE_HOURS|repoCacheTtlMs/.test(codeOf(f)));
+  assert.deepEqual(leftover, [], `还有文件在代码位认得那个撤掉的键：${leftover.join(', ')}`);
+  // 窗口那一格：判据吃 domain 的常数，不在 repo.js 里另写一个毫秒数
+  const rp = codeOf('lib/services/repo.js');
+  assert.match(rp, /now\(\) - base < DETAIL_RECHECK_MS/, '窗口判据不吃那个常数 ⇒ 60 秒可以在两处各写一个数');
+  assert.doesNotMatch(rp, /60 \* 1000|60_000|60000/, 'repo.js 自己写了一个 60 秒的毫秒数（量级写歪本地看不出来）');
+  assert.match(rp, /const prev = !refresh && stored\?\.ok === true \? stored : null;/,
+    '强制刷新那一发必须一个字都不喂 prev：带着旧验证器去问就是"看着像刷新、其实换回 304 的老正文"');
+  assert.equal(DETAIL_RECHECK_MS, 60 * 1000, '常数本身钉住：写成 60 分或 60 毫秒都不会在本地露出来');
 });
 
 check('hc-21 GitHub 令牌的接线（第二十一轮）：装配处现取现算，令牌的读者只有详情那一路，界面不抄那两个词', () => {
   const idx = codeOf('index.js');
   assert.match(idx, /getGhToken:\s*\(\)\s*=>\s*getPrefs\(\)\.ghToken/,
-    'index.js 没把令牌接成按偏好现取现算 ⇒ 用户在设置页填了令牌，真跑的那一发仍是装配时空的那一份（和 hc-20 那条 TTL 同一个形状：改档要到宿主重启才认，而界面已经显示成新档）');
+    'index.js 没把令牌接成按偏好现取现算 ⇒ 用户在设置页填了令牌，真跑的那一发仍是装配时空的那一份（"保存了却没生效"正是 hc-20 撤掉的那条 TTL 链的形状）');
   assert.doesNotMatch(idx, /const\s+\w*token\w*\s*=/i, '装配处把令牌存成变量 ⇒ 它在装配层多活了一份，改档与清空都追不上');
   // 令牌的键名在宿主半边只许这三处出现：domain（登记）、repo.js（唯一读者）、index.js（把那把现取现算地递过去）。
   // ★ 写路径/回显闸门/界面都**不点名**它（吃的是 PREF_CRED_FIELDS 那份派生表）⇒ 点名处多一处，就是多一个能把令牌递错的出口。

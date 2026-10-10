@@ -27,8 +27,8 @@ import {
 import { createRepoCacheStore } from '../lib/stores.js';
 import { DESC_ZH_ROWS, DESC_ZH_LABEL } from '../lib/desc-zh.js';
 import {
-  GITHUB_API_BASE, REPO_RATE_ANON, REPO_RATE_AUTH, REPO_CACHE_TTL_MS, REPO_FAIL_TTL_MS, REPO_TIMEOUT_MS,
-  REPO_CACHE_HOURS, REPO_CACHE_DEFAULT_HOURS, repoCacheTtlMs,
+  GITHUB_API_BASE, REPO_RATE_ANON, REPO_RATE_AUTH, DETAIL_RECHECK_MS, REPO_FAIL_TTL_MS, REPO_TIMEOUT_MS,
+  DEFAULT_PREFS,
   RATE_LABEL_ANON, RATE_LABEL_AUTH,
   README_HEAD_CHARS, README_ZH_MIN_CJK, README_ZH_SECTION_MIN_CJK, DESC_SELF_ZH_MIN_CJK,
   README_EXCERPT_MAX, EXCERPT_SENT_BACK_MAX, README_ZH_LINK_MAX,
@@ -93,6 +93,11 @@ const rateHead = (left, reset = 1791175333) => ({
 /**
  * 按整路径匹配的假 fetch。entries: [{path, status?, text?, headers?, throw?, code?}]
  * throw 项也占一个路径位，这样"该发几发"的断言仍然按路径数得清。
+ * ★ 第二十七轮加条件请求语义（与 `test/_helpers.mjs` 的 `makeFakeFetch` 同一口径）：
+ *   条目 headers 里带 `etag`、且请求带着**逐字相同**的验证器 ⇒ 回 304 空正文。
+ *   ★ `text()` / `json()` 在 304 上**故意抛**：产品侧真读了一行就该红（`get()` 里那句「先读头再决定要不要读正文」
+ *   本来就没有别的守法 —— 静默返回空串的话，"把 0 字节当新正文覆盖库里那一份"这条错在测试里长得和对的一模一样）。
+ *   入站验证器**大小写不敏感**地取：真 fetch 走 Headers 对象，本来不分大小写。
  */
 function makeApiFetch(entries) {
   const map = new Map(entries.map((e) => [e.path, e]));
@@ -100,13 +105,24 @@ function makeApiFetch(entries) {
   const fetchFn = async (url, opts = {}) => {
     const u = new URL(String(url));
     const path = u.pathname;
-    seen.push({ url: String(url), host: u.host, path, method: opts.method ?? 'GET', headers: opts.headers ?? {}, signal: opts.signal, timeoutMs: opts.timeoutMs });
+    const reqHeaders = opts.headers ?? {};
+    seen.push({ url: String(url), host: u.host, path, method: opts.method ?? 'GET', headers: reqHeaders, signal: opts.signal, timeoutMs: opts.timeoutMs });
     const e = map.get(path);
     if (!e) throw new Error(`假 fetch 没登记这个路径：${u.host}${path}`);
     if (e.throw) throw Object.assign(new Error(e.throw), { code: e.code });
     const status = e.status ?? 200;
     const lower = {};
     for (const [k, v] of Object.entries(e.headers ?? {})) lower[String(k).toLowerCase()] = String(v);
+    const inmKey = Object.keys(reqHeaders).find((k) => String(k).toLowerCase() === 'if-none-match');
+    const inmVal = inmKey ? String(reqHeaders[inmKey]) : '';
+    if (lower.etag && inmVal && inmVal === lower.etag) {
+      return {
+        ok: false, status: 304,   // 真宿主：304 不是 2xx，`res.ok` 为假
+        headers: { get: (k) => (String(k).toLowerCase() === 'etag' ? lower.etag : null) },
+        async text() { throw new Error('304 不该读正文'); },
+        async json() { throw new Error('304 不该读正文'); },
+      };
+    }
     return {
       ok: status >= 200 && status < 300, status,
       headers: { get: (k) => (lower[String(k).toLowerCase()] ?? null) },
@@ -1046,6 +1062,15 @@ check('限额头读进 rate：真夹具读数照原样给，没有头时 left �
   assert.equal(d2.rate.resetAt, 0);
 });
 
+check('★ 传输层炸一发（fetch 抛）不许把限额读数擦成 undefined：那一发也回一个"没有读数"的形状', async () => {
+  // README 那一发抛（元数据那发是真夹具，带限额头）⇒ 手里的读数必须留着，而不是被一次失败抹掉。
+  const f = fullTable([{ path: `/repos/${WEEKLY}/readme`, throw: 'ECONNRESET', code: 'ECONNRESET' }]);
+  const d = await fetchRepoDetail({ repo: WEEKLY, fetchFn: f, now: NOW });
+  assert.equal(d.ok, true, JSON.stringify(d));
+  assert.equal(typeof d.rate, 'object', '失败那一发没回 rate ⇒ 调用方拿 undefined 覆盖了手里的读数（界面上那句"还剩多少"整个消失）');
+  assert.equal(d.rate.left, Number(src(`/repos/${WEEKLY}`).headers['x-ratelimit-remaining']), '元数据那一发的读数被一次 README 失败抹掉了');
+});
+
 check('GitHub 把计数写成 null 时不炸整行：那一格当"没有这个字段"', async () => {
   const meta = { ...JSON.parse(src(`/repos/${WEEKLY}`).text) };
   meta.stargazers_count = null;
@@ -1073,7 +1098,7 @@ check('repoCacheRow 只落 schema 字段：rate / cached / sections / sectionFie
   const view = repoView(d, { cached: false, rate: d.rate });
   const row = repoCacheRow(view);
   // ★ 钉的是「视图上有、入库行里必须没有」：只断 undefined 的话，一个**从来不存在**的键也能蒙过去（假绿）。
-  for (const k of ['sections', 'sectionFields', 'rate', 'cached', 'cacheAgeMs', 'error']) {
+  for (const k of ['sections', 'sectionFields', 'rate', 'cached', 'cacheAgeMs', 'error', 'revalidated']) {
     assert.ok(k in view, `夹具走的是真 repoView，视图上却没有 ${k} ⇒ 这一判压根没挂上`);
     assert.equal(row[k], undefined, `视图字段漏进了入库行：${k}`);
   }
@@ -1108,6 +1133,9 @@ check('失败行只带 errKey/errText 两样，且 errKey 必须在封闭集合�
   const d = await fetchRepoDetail({ repo: 'this-org/no-such-repo-xyz', fetchFn: f, now: NOW });
   const row = repoCacheRow(d);
   assert.deepEqual(Object.keys(row).sort(), ['at', 'errKey', 'errText', 'ok', 'repo']);
+  // ★ 第二十七轮那一格判据的落点：失败行**没有正文可复用**，所以它不该带任何验证器 ——
+  //   带上了，下一问就成"拿一把没人认的钥匙去开门"，而库里那一行根本没有门。
+  assert.ok(!('etagMeta' in row) && !('etagReadme' in row) && !('checkedAt' in row), `失败行写出了复用用的字段：${Object.keys(row)}`);
   assert.ok(Object.keys(REPO_ERROR_LABELS).includes(row.errKey));
 
   const facility = makeFakeFacility();
@@ -1170,25 +1198,53 @@ check('视图的标签全部来自 domain 一张表（客户端不自己写中�
 });
 
 /* ------------------------------------------------------------------ *
- * 6. 缓存门面（TTL / 去重 / 降级）
+ * 6. 缓存门面（60 秒防连点窗口 / 条件请求 / 去重 / 降级）
  * ------------------------------------------------------------------ */
-async function mkService({ rows = [], clock = { at: NOW() }, storeOpts = {}, getTtlMs } = {}) {
+async function mkService({ rows = [], clock = { at: NOW() }, storeOpts = {}, table } = {}) {
   const facility = makeFakeFacility();
   const store = createRepoCacheStore({ getFacility: () => facility, logger: { warn: () => {} }, ...storeOpts });
   await store.get('open/first');                    // 先把域打开，seed 才塞得进（假设施按真宿主口径要求域已 open）
   for (const r of rows) facility.seed('gh_trending', 'repo', String(r.repo).toLowerCase(), r);
-  const f = fullTable();
-  // 不给 getTtlMs 时走 domain 的默认档（24 小时）：用例不许在第三处再写一个毫秒数
-  const svc = createRepoDetailService({ repoStore: store, fetchFn: f, now: () => clock.at, ...(getTtlMs ? { getTtlMs } : {}) });
+  // 默认三档真夹具；条件请求那几条换 `table`（要往响应头里塞 etag 就得自己铺表）。
+  const f = table ?? fullTable();
+  // ★ 第二十七轮：这里不再交 `getTtlMs` —— 小时档整条撤了，窗口是 domain 的 `DETAIL_RECHECK_MS` 一个常数。
+  //   旧注释那条律（用例不许在第三处写毫秒数）原样留着，只是现在连注入点都不该存在。
+  const svc = createRepoDetailService({ repoStore: store, fetchFn: f, now: () => clock.at });
   return { svc, f, store, facility, clock };
 }
 
-check('库里躺着今天那一行 ⇒ 第一次点击也不出网，中文段表仍由入库字段拼出来', async () => {
-  const seeded = repoCacheRow(await fetchRepoDetail({ repo: ANT, fetchFn: fullTable(), now: () => NOW() - 60_000 }));
+/* ---- 条件请求那几条共用的表（第二十七轮）----
+ * 真夹具条条无 etag（`test/make-repo-fixtures.mjs` 抓的时候 GitHub 就没给），所以：
+ *  · 验证器的**出处**由这里现造的 etag 钉（形状是真的：弱标 `W/"…"`，实测 GitHub 详情那两发回的就是弱标）；
+ *  · 正文、限额头、发数**一律吃真夹具**，不另造回包。
+ * ★ 合成的是"GitHub 给的那把钥匙长什么样"，不是"GitHub 怎么答" —— 后者仍然逐字节来自真抓。
+ */
+const ETAG_META = 'W/"meta-a1b2"';
+const ETAG_RD = 'W/"readme-c3d4"';
+const withEtag = (path, etag) => {
+  const e = src(path);
+  return { ...e, headers: { ...e.headers, etag } };
+};
+/** ant 那一套（四路径）带验证器的表：默认 README 不是中文 ⇒ 命中 zh_file 要两发，共 4 发出网。 */
+const antTable = (over = []) => fullTable([
+  withEtag(`/repos/${ANT}`, ETAG_META),
+  withEtag(`/repos/${ANT}/readme`, ETAG_RD),
+  ...over,
+]);
+/** 真问一发拿到的库里那一行（带两把验证器），条件请求那几条都从它出发。 */
+const antRow = async (at = NOW()) => repoCacheRow(await fetchRepoDetail({ repo: ANT, fetchFn: antTable(), now: () => at }));
+/** 请求里有没有带出验证器（大小写都算，真 fetch 走 Headers 本来不分大小写）。 */
+const inmOf = (seen) => seen.map((s) => {
+  const k = Object.keys(s.headers).find((x) => String(x).toLowerCase() === 'if-none-match');
+  return k ? s.headers[k] : '';
+});
+
+check('库里躺着 60 秒内的那一行 ⇒ 第一次点击也不出网，中文段表仍由入库字段拼出来', async () => {
+  const seeded = await antRow(NOW() - 30_000);
   const { svc, f } = await mkService({ rows: [seeded] });
   const v = await svc.load(ANT);
   assert.equal(v.cached, true);
-  assert.equal(f.seen.length, 0, '缓存里就有今天的行，还打接口是白花限额');
+  assert.equal(f.seen.length, 0, '窗口内还打接口 = 用户连点两下烧两发限额');
   assert.equal(v.readmeSource, 'zh_file');
   assert.match(secTexts(v.sections, 'what'), /React/, '入库行拼不出描述那句 ⇒ 存的时候漏了字段');
   assert.ok(secOf(v.sections, 'self').blocks.some((b) => b.kind === 'excerpt'), '入库行拼不出 README 节选块 ⇒ 存的字段不够界面用');
@@ -1196,39 +1252,187 @@ check('库里躺着今天那一行 ⇒ 第一次点击也不出网，中文段�
   assert.ok(secOf(v.sections, 'heat').facts.some((x) => x.key === 'stars'), '入库行拼不出元数据条，说明存的字段不够界面用');
 });
 
-check('出厂 24 小时内的第二次点击不发网络；过了 24 小时才重取', async () => {
+check('★ 60 秒窗口内第二次点击一发不出网；过了 60 秒就再问一次（档位撤了，窗口只有 domain 那一个常数）', async () => {
   const { svc, f, clock } = await mkService();
   await svc.load(ANT);
   assert.equal(f.seen.length, 4);
-  clock.at += REPO_CACHE_TTL_MS - 1000;
+  clock.at += DETAIL_RECHECK_MS - 1;
   const hit = await svc.load(ANT);
   assert.equal(hit.cached, true);
-  assert.equal(f.seen.length, 4, '没到 TTL 就重取，限额是硬的');
-  clock.at += 2000;
+  assert.equal(f.seen.length, 4, '没到 60 秒就重取 ⇒ 防连点那一档形同不存在');
+  clock.at += 2;
   await svc.load(ANT);
-  assert.equal(f.seen.length, 8, '过了 TTL 该重取');
+  assert.equal(f.seen.length, 8, '过了 60 秒该再问一次：条件请求的前提是"每次都问"，不问就不知道有没有变');
 });
 
-check('TTL 调用时现取现算：设置页改档，下一发详情就按新档判新鲜（不在装配时锁死）', async () => {
-  let hours = REPO_CACHE_DEFAULT_HOURS;
-  const { svc, f, clock } = await mkService({ getTtlMs: () => repoCacheTtlMs(hours) });
+check('★ 60 秒那一格只有一个出处：DETAIL_RECHECK_MS = 60_000，domain 里不再有小时档那三个名字', async () => {
+  assert.equal(DETAIL_RECHECK_MS, 60 * 1000, '写死一个毫秒数 ⇒ 界面撤了档位而窗口可以和 60 秒分叉');
+  const dom = await import('../lib/domain.js');
+  const leftovers = Object.keys(dom).filter((k) => /CACHE_HOUR|repoCacheTtlMs|CACHE_TTL/i.test(k));
+  assert.deepEqual(leftovers, [], `小时档的残留导出：${leftovers.join(', ')} —— 档撤了还留着名字是第二份真相`);
+  assert.equal('repoCacheHours' in DEFAULT_PREFS, false, '出厂偏好里还躺着那一格 ⇒ 界面上没有它、库里却有它');
+});
+
+/* ---- 第二十七轮：条件请求（每次点开都问，没变就复用正文）---- */
+
+check('★ 200 那一问把 GitHub 回的验证器**原样**落库（弱标 W/ 前缀一个字不动），下一问才带得出去', async () => {
+  const d = await fetchRepoDetail({ repo: ANT, fetchFn: antTable(), now: NOW });
+  assert.equal(d.etagMeta, ETAG_META, '元数据那把钥匙没带回来');
+  assert.equal(d.etagReadme, ETAG_RD, 'README 那把钥匙没带回来');
+  const row = await (async () => {
+    const facility = makeFakeFacility();
+    const store = createRepoCacheStore({ getFacility: () => facility, logger: { warn: () => {} } });
+    const put = await store.put(repoCacheRow(d));
+    assert.equal(put.dropped, 0, `三格新字段没进 schema ⇒ 整行被拒：${JSON.stringify(put)}`);
+    return store.get(ANT);
+  })();
+  assert.equal(row.etagMeta, ETAG_META, '存进去又读不出来等于没存：下一问只能裸发，条件请求整轮白做');
+  assert.equal(row.etagReadme, ETAG_RD);
+  assert.equal(row.checkedAt, NOW(), '问过的那一刻没落库 ⇒ 60 秒窗口退回按正文时刻判，每点一次问一次');
+  assert.equal(row.version ?? 1, 1, '加三格不吃版本号：抬了旧库读不出');
+});
+
+check('★ 两发都 304 ⇒ 只 2 发出网、正文一个字没换：at 沿用库里那刻，checkedAt 推进（落款那两个时刻各有出处）', async () => {
+  const threeDaysAgo = NOW() - 3 * 86_400_000;
+  const prev = await antRow(threeDaysAgo);
+  assert.equal(prev.at, threeDaysAgo);
+  const f = antTable();
+  const d = await fetchRepoDetail({ repo: ANT, fetchFn: f, now: NOW, prev });
+  assert.equal(d.ok, true);
+  // ant 是真夹具里的 zh_file：默认 README 不是中文才需要那两发。README 304 ⇒ 那条分支整条不发。
+  assert.equal(f.seen.length, 2, `README 没变却还在找"仓库另写的那一份"：发了 ${f.seen.length} 发`);
+  assert.deepEqual(inmOf(f.seen), [ETAG_META, ETAG_RD], '带着旧验证器出发那两发的钥匙必须各对各段（拿元数据的钥匙去问 README 换不回 304）');
+  assert.equal(d.at, prev.at, '正文没换还把 at 推到"现在" ⇒ 屏上那句「正文取回于 …」指的就不是正文了');
+  assert.equal(d.checkedAt, NOW(), '问过的那一刻必须推进（含 304）：不推进就没有「刚核对过」，窗口也退回按正文时刻判');
+  assert.equal(d.etagMeta, ETAG_META, '304 那一发把验证器弄丢了 ⇒ 下一问退化成裸发，条件请求只做对一次');
+  assert.equal(d.etagReadme, ETAG_RD);
+  // 复用的正文与库里那一份逐字同形（不是"重新解析了一遍 304 的空正文"）
+  for (const k of ['desc', 'readmeExcerpt', 'readmeSource', 'readmePath', 'stars', 'lang']) {
+    assert.deepEqual(d[k], prev[k], `复用出来的 ${k} 和库里那一份不一样`);
+  }
+  const v = repoView(d, { cached: false });
+  assert.equal(v.checkedAt, NOW(), 'checkedAt 才是"问过"的那一格');
+  assert.equal(v.revalidated, true, '304 复用之后界面那句「刚核对过」必须有得说');
+  assert.ok(v.readmeExcerpt.length > 0, '把 304 的空正文端给了界面 ⇒ 屏上一片空白而落款说刚核对过');
+});
+
+check('★ 只有 README 变了（元数据 304 + README 200）⇒ 正文时刻推进、那条找中文篇的分支重新发满', async () => {
+  const prev = await antRow(NOW() - 86_400_000);
+  const f = antTable([{ ...withEtag(`/repos/${ANT}/readme`, 'W/"新落下的那把"') }]);
+  const d = await fetchRepoDetail({ repo: ANT, fetchFn: f, now: NOW, prev });
+  assert.equal(f.seen.length, 4, 'README 换了就得把那条分支重新走一遍（少发 = 屏上还是旧的那一份）');
+  assert.equal(d.at, NOW(), '真拿到新正文还不推进 at ⇒ 落款说的"正文取回于"停在上一版');
+  assert.equal(d.etagReadme, 'W/"新落下的那把"', '换了正文却留着旧钥匙 ⇒ 下一问拿错钥匙，永远 200，等于条件请求失效');
+  assert.equal(d.etagMeta, ETAG_META, '元数据那 304 复用出来的字段该照旧，可钥匙不能丢');
+  assert.equal(repoView(d, {}).revalidated, false, '这次换了正文，那句「刚核对过」就不该出现（at 与 checkedAt 同一刻）');
+});
+
+check('★ 库里那一行没有验证器（条件请求之前写的老行）⇒ 裸发，一条空 If-None-Match 也不发', async () => {
+  const fresh = await antRow();
+  const legacy = { ...fresh };
+  delete legacy.etagMeta; delete legacy.etagReadme;   // 老库里真实存在的形状：那三格根本没有
+  const f = antTable();
+  const d = await fetchRepoDetail({ repo: ANT, fetchFn: f, now: NOW, prev: legacy });
+  assert.equal(d.ok, true);
+  assert.deepEqual(inmOf(f.seen), ['', '', '', ''], `没有钥匙还去问 ⇒ GitHub 按 If-None-Match 缺失给 200，但空头发出去是坏请求：${JSON.stringify(inmOf(f.seen))}`);
+  assert.equal(f.seen.length, 4);
+});
+
+check('★★ 不变式：没带验证器却回了 304（中间代理/接口改版）⇒ 立刻裸发重问，绝不把空正文端给界面', async () => {
+  // 合成档（合成理由写在这里）：真 GitHub 不会在**没收到** If-None-Match 时回 304，
+  //   但 304 是缓存语义，CDN / 公司代理 / 接口改版都可能这么答 —— 产品侧的守法只有一条：
+  //   手里没有可复用的正文就重问一遍。这一路只有"每一径的头一发无条件 304"才造得出来，桩按真响应的格子摆。
+  const base = fullTable();
+  const calls = new Map();
+  const fetchFn = async (url, opts) => {
+    const path = new URL(String(url)).pathname;
+    const n = (calls.get(path) ?? 0) + 1;
+    calls.set(path, n);
+    const inm = Object.keys(opts.headers || {}).find((k) => String(k).toLowerCase() === 'if-none-match');
+    if (n === 1 && inm) return base(url, opts);   // 带着钥匙那一趟照真夹具走（本用例不该有这一趟）
+    if (n === 1) {
+      return {
+        ok: false, status: 304,
+        headers: { get: () => null },
+        async text() { throw new Error('304 不该读正文'); },
+        async json() { throw new Error('304 不该读正文'); },
+      };
+    }
+    return base(url, opts);                        // 裸发重问那一趟：真夹具正文回来
+  };
+  // prev 缺位 = 库里没有可复用的正文，而这一问压根没带钥匙 ⇒ 唯一守法是重问，不是把空正文端上去。
+  const d = await fetchRepoDetail({ repo: WEEKLY, fetchFn, now: NOW });
+  assert.equal(d.ok, true);
+  assert.equal(d.at, NOW(), '重问拿到了真正文还不推进 at ⇒ 落款说的"正文取回于"停在不知道的那一天');
+  assert.ok(d.desc.length > 0 && d.readmeExcerpt.length > 0, '把 304 的空正文端给了界面：屏上一片空白而落款说刚核对过');
+  assert.equal(repoView(d, {}).revalidated, false, '这一趟真换了正文，那句「刚核对过」是假话');
+  assert.deepEqual([...calls.keys()].sort(), [`/repos/${WEEKLY}`, `/repos/${WEEKLY}/readme`]);
+  assert.deepEqual([...calls.values()], [2, 2], `每一径都该是「304 一发 + 裸发重问一发」：${JSON.stringify([...calls])}`);
+  assert.equal(d.etagMeta, '', 'GitHub 这一趟一个字头的验证器都没给 ⇒ 落空串（下一问退化成裸发），不许凭空造一把');
+});
+
+check('★ 不变式第二形：库里有正文但**没钥匙**（老行）而裸发回了 304 ⇒ 照样重问，"有正文"不等于"可复用"', async () => {
+  // ★ 这一形与上一形差在 prev：**上一形 prev 缺位，这一形 prev 带着一整行可复用的正文、只是那两把钥匙根本没有**
+  //   （`repoCacheRow` 把空 etag 折成"没有这个键"，所以这是真会躺在库里的形状，不是想象）。
+  //   复用闸门的条件因此必须是「这一发真带过验证器」，而不是「手里有正文」：后者会把一次无根据的 304 当成核对过。
+  const threeDaysAgo = NOW() - 3 * 86_400_000;
+  const prev = repoCacheRow(await fetchRepoDetail({ repo: WEEKLY, fetchFn: fullTable(), now: () => threeDaysAgo }));
+  delete prev.etagMeta; delete prev.etagReadme;
+  assert.equal(prev.ok, true, '夹具没造出"成功行却没有钥匙"那一格 ⇒ 下面这条断言在测空气');
+  assert.equal(prev.at, threeDaysAgo);
+  const base = fullTable();
+  const seen = [];
+  const fetchFn = async (url, opts) => {
+    const path = new URL(String(url)).pathname;
+    seen.push({ url, headers: opts?.headers || {}, path });
+    if (seen.filter((s) => s.path === path).length === 1) {
+      return {
+        ok: false, status: 304,
+        headers: { get: () => null },
+        async text() { throw new Error('304 不该读正文'); },
+        async json() { throw new Error('304 不该读正文'); },
+      };
+    }
+    return base(url, opts);
+  };
+  const d = await fetchRepoDetail({ repo: WEEKLY, fetchFn, now: NOW, prev });
+  assert.equal(d.ok, true);
+  assert.deepEqual(inmOf(seen), seen.map(() => ''), `老行没钥匙就该一发也不带验证器：${JSON.stringify(inmOf(seen))}`);
+  assert.equal(seen.length, 4, `每一径都该是「无根据的 304 一发 + 裸发重问一发」，实发 ${seen.length} 发`);
+  assert.equal(d.at, NOW(), '重问真拿到了正文 ⇒ 正文时刻必须推进（把"有正文"当复用就会停在三天前）');
+  assert.equal(repoView(d, {}).revalidated, false, '这一趟真换了正文还说「刚核对过」就是假话');
+  assert.ok(d.desc.length > 0 && d.readmeExcerpt.length > 0);
+});
+
+check('★ refresh=true 一个字都不带验证器：那颗按钮写着「不走缓存」，带着旧钥匙去问就是大概率换回 304 的假刷新', async () => {
+  const prev = await antRow(NOW() - 30_000);   // 窗口内：正常点一发都不问
+  const { svc, f } = await mkService({ rows: [prev], table: antTable() });
+  assert.equal((await svc.load(ANT)).cached, true);
+  assert.equal(f.seen.length, 0);
+  const v = await svc.load(ANT, { refresh: true });
+  assert.equal(v.cached, false);
+  assert.equal(f.seen.length, 4, '强制刷新就得发满');
+  assert.deepEqual(inmOf(f.seen), ['', '', '', ''], 'refresh 那几发带了验证器 ⇒ 大概率换回 304 的老正文，按钮那句话成了假话');
+  assert.equal(v.revalidated, false, '真刷新拿到新正文，那句「刚核对过」不该出现');
+});
+
+check('★ 窗口量的是 checkedAt 而不是 at：304 之后 at 还是三天前，60 秒内再点照样一发不发', async () => {
+  const threeDaysAgo = NOW() - 3 * 86_400_000;
+  const prev = await antRow(threeDaysAgo);
+  const { svc, f, clock } = await mkService({ rows: [prev], table: antTable() });
+  const first = await svc.load(ANT);
+  assert.equal(first.revalidated, true);
+  assert.equal(first.at, threeDaysAgo);
+  assert.equal(f.seen.length, 2);
+  clock.at += DETAIL_RECHECK_MS - 1;
+  const second = await svc.load(ANT);
+  assert.equal(second.cached, true, '正文时刻在窗口外就问 ⇒ 每次点开都烧两发限额，60 秒那一档形同不存在');
+  assert.equal(f.seen.length, 2);
+  assert.equal(second.revalidated, true, '缓存命中那一路也得把「刚核对过」带着走（判据在库里的 checkedAt 与 at 之间，不是新拼的）');
+  assert.equal(second.at, threeDaysAgo);
+  clock.at += 2;
   await svc.load(ANT);
-  assert.equal(f.seen.length, 4);
-  // 出厂 24 小时：过了 7 小时仍是缓存
-  clock.at += 7 * 60 * 60 * 1000;
-  assert.equal((await svc.load(ANT)).cached, true, '24 小时档下 7 小时不该重取');
-  assert.equal(f.seen.length, 4);
-  // ★ 用户把档位改成 6 小时 —— 已经躺了 7 小时的那一行当场过期，下一发就该重取。
-  //   装配时把毫秒抄进服务的话，这一发照样给缓存，而设置页上已经写着「6 小时」（两份真相）。
-  hours = 6;
-  assert.equal((await svc.load(ANT)).cached, false, '改档之后还按旧档给缓存 ⇒ TTL 被锁在装配时了');
-  assert.equal(f.seen.length, 8);
-  // 档位 → 毫秒只有一个算法：界面上的档位名与真跑的 TTL 不许各算各的
-  assert.deepEqual(REPO_CACHE_HOURS.map(repoCacheTtlMs), [6, 12, 24, 72].map((h) => h * 60 * 60 * 1000));
-  assert.equal(repoCacheTtlMs(undefined), REPO_CACHE_TTL_MS, '没选档 = 出厂档，不是 0（0 = 每次点击都出网）');
-  assert.equal(repoCacheTtlMs(0), REPO_CACHE_TTL_MS, '档位外的值退回出厂档，不许把缓存整个关掉');
-  assert.equal(repoCacheTtlMs('6'), 6 * 60 * 60 * 1000, '查询串里来的字符串要吃下（同 clampPrefs 的 Number 口径）');
-  assert.equal(REPO_CACHE_TTL_MS, 24 * 60 * 60 * 1000, '默认那一档：第十二轮从 12 小时改判为 24 小时');
+  assert.equal(f.seen.length, 4, '过窗后该再问一次');
 });
 
 check('失败行只钉 5 分钟：改名后重点，过窗就给新答案', async () => {

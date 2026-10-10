@@ -111,8 +111,14 @@ export function makeFakeFetch(routes) {
     if (typeof r === 'function') r = await r(url, opts);
     const status = r.status ?? 200;
     const etag = r.headers?.etag ?? '';
-    const inm = (opts.headers || {})['If-None-Match'];
-    if (etag && inm && inm === etag) {
+    // ★ 第二十七轮：入站的验证器**大小写不敏感**地取（原来只认 `If-None-Match` 那一种拼法）。
+    //   真 fetch 把 init.headers 收进 Headers 对象，跨线时按 HTTP 语义本来就不分大小写；
+    //   替身若按字面键取，`repo.js` 那条小写 `if-none-match` 就永远撞不上 304 ——
+    //   那是替身比产品窄，测出来的"没命中"和线上无关。
+    const hdrs = opts.headers || {};
+    const inm = Object.keys(hdrs).find((k) => String(k).toLowerCase() === 'if-none-match');
+    const inmVal = inm ? hdrs[inm] : '';
+    if (etag && inmVal && inmVal === etag) {
       return {
         ok: false, status: 304,
         headers: { get: (k) => (String(k).toLowerCase() === 'etag' ? etag : null) },

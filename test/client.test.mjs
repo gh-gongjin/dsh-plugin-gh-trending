@@ -26,7 +26,7 @@ import {
   //   拿它当"全部密钥"就漏扫了新加那把（hc-0 那条「手抄必漏」）。
   PREF_SECRET_KEYS, GH_CRED_FIELDS, GH_TOKEN_NOTE, REPO_RATE_ANON, REPO_RATE_AUTH, RATE_LABEL_ANON, RATE_LABEL_AUTH,
   REPO_FIELD_LABELS, REPO_ERROR_LABELS, REPO_FLAG_LABELS, REPO_README_SOURCE_LABELS,
-  REPO_CACHE_HOURS, REPO_CACHE_HOUR_LABELS, REPO_SECTION_LABELS,
+  DETAIL_STAMP_LABELS, REPO_SECTION_LABELS,
   README_ZH_GATE_SUFFIXES,
   TRANSLATE_COMMON_NOTE, LLM_SWITCH_LABELS, LLM_README_LABEL_TRANSLATE, LLM_KINDS, LLM_NOT_READY_HINT, llmZhLabel,
   // 第二十二轮：榜面那一列的两种来源，落款与那句"发不出去"的实话都在 domain，用例只认名字不抄文本。
@@ -55,8 +55,9 @@ const PAYLOAD = {
   capabilityRows: [], boards: BOARDS, boardLabels: BOARD_LABELS, boardAddedLabels: BOARD_ADDED_LABELS,
   sourceNote: TRENDING_SOURCE_NOTE, langCheck: LANG_CHECK, crossMin: 2,
   intervals: CHECK_INTERVALS, intervalLabels: CHECK_INTERVAL_LABELS,
-  // ★ 第十二轮：详情缓存时长的档位与话术（键名与 index.js 推的那一份由 hc-12 逐键对齐钉着）
-  cacheHours: REPO_CACHE_HOURS, cacheHourLabels: REPO_CACHE_HOUR_LABELS,
+  // ★ 第二十七轮：详情落款那两截词（键名与 index.js 推的那一份由 hc-11 逐键对齐钉着）。
+  //   旧 here 是第十二轮那两格 `cacheHours` / `cacheHourLabels`（档位名单 + 档位话术），随那一档一起撤。
+  detailStampLabels: DETAIL_STAMP_LABELS,
   topNRange: { min: TOP_N_MIN, max: TOP_N_MAX },
   keepEventsRange: { min: KEEP_EVENTS_MIN, max: KEEP_EVENTS_MAX, step: KEEP_EVENTS_STEP },
   proxyModes: PROXY_MODES, proxyModeLabels: PROXY_MODE_LABELS, proxyModeHints: PROXY_MODE_HINTS,
@@ -277,6 +278,9 @@ function snapFixture(over = {}, starsOver = {}) {
 function detailFixture(srcOver = {}, { cached = true, ageMs = 3 * 3600000, rate = { left: 41, resetAt: 0 }, zhOf = null, ...optOver } = {}) {
   const src = {
     repo: 'vitejs/vite', name: 'vitejs/vite', ok: true, at: atOff(-30000),
+    // ★ 第二十七轮：`checkedAt` 与 `at` 是两件事（问过 GitHub 的时刻 / 上一次真拿到正文的时刻）。
+    //   默认两格同刻 ⇒ `revalidated` 为假，那句「· 刚核对过」不出现；要测那一句的用例把 `checkedAt` 递新一点即可。
+    checkedAt: atOff(-30000),
     desc: 'Next generation frontend tooling', lang: 'TypeScript', stars: 66000, forks: 5400,
     issues: 500, topics: ['build-tools', 'vite'], license: 'MIT',
     pushedAt: '2026-09-30T08:00:00Z', createdAt: '2017-12-04T00:00:00Z',
@@ -1345,8 +1349,8 @@ check('client-39 设置卡的出网方式：三档吃载荷、地址是草稿、
   const segRows = findByClass(staleTree, 'gt-setrow')
     .filter((r) => findByClass(r, 'gt-seg').length)
     .map((r) => text(findByClass(r, 'gt-setlabel')[0]));
-  assert.deepEqual(segRows, ['检查间隔', '详情缓存', '现译引擎', '描述现译', '摘要现译'],
-    '旧宿主只撤出网方式那一行；现译引擎与两档开关吃的是 snap.translator 这个键，载荷带着就照常渲染');
+  assert.deepEqual(segRows, ['检查间隔', '现译引擎', '描述现译', '摘要现译'],
+    '旧宿主只撤出网方式那一行；现译引擎与两档开关吃的是 snap.translator 这个键，载荷带着就照常渲染（第二十七轮：详情缓存那一行随档位一起没了）');
   // 草稿只初始化一次（与语言同一个坑）：每次 update 帧都覆盖输入框会吃掉用户正在打的字
   const src = clientSrc();
   assert.match(src, /if \(proxyInit\.current \|\| !snap\) return;/);
@@ -1447,13 +1451,24 @@ check('client-41 详情弹框直通 repoView：段名、块、元数据成对、
   assert.ok(meta && meta.text.length > 0, '夹具的落款没被拼出来，下面这条断言就在测空气');
   assert.ok(t.includes(meta.text), `落款没原样出现：${meta.text}`);
   assert.ok(!/节选 \$\{|readmeChars \} 字/.test(clientSrc()), '「节选 N 字」这句必须由宿主拼，客户端不许自己数');
-  assert.match(t, /缓存于 3 小时前/, 'cached:true 要说这是缓存的，并把 ageMs 折算成人话');
+  // ★ 第二十七轮（用户裁定界面写成「正文取回于 3 天前 · 刚核对过」）：落款**一律吃 `v.at`**，
+  //   旧口径那句按 `v.cached` 分岔的「缓存于 …」/「取回于 …」撤了 —— 条件请求之后缓存行也带着
+  //   最近一次问的读数，`at` 在两条路指同一件事（上一次真拿到正文），分岔反而让同一屏两种写法。
+  //   两个词都从载荷取（用例也照 `DETAIL_STAMP_LABELS` 拼，不抄字面）。
+  const revalidated = detailFixture({ at: Date.now() - 3 * 86400000, checkedAt: Date.now() }, { cached: true });
+  const rvText = text(render(DetailModal, { detail: { repo: revalidated.repo, loading: false, view: revalidated, err: '' }, onClose() {}, onRefresh() {} }));
+  assert.equal(revalidated.revalidated, true, '夹具没造出"问过而正文没换"那一格 ⇒ 下面这条断言在测空气');
+  assert.match(rvText, new RegExp(`${DETAIL_STAMP_LABELS.body} 3 天前 · ${DETAIL_STAMP_LABELS.revalidated}`), `那句落款不对：${rvText}`);
+  assert.ok(!/缓存于/.test(rvText), '「缓存于」还留在屏上 ⇒ 那句话在条件请求之后是假话（缓存行也问过 GitHub）');
   assert.match(t, /匿名配额剩 41 \/ 60/);
   assert.ok(!/重置$|重置，/.test(t) && !/分钟后重置/.test(t), 'resetAt 为 0（没拿到响应头）时不说「N 后重置」');
 
-  const fresh = detailFixture({ at: Date.now() - 2 * 3600000 }, { cached: false, ageMs: 0 });
+  // 正文就是这一问拿回来的（`checkedAt === at`）⇒ 只剩前半句，「刚核对过」不出现
+  const twoHoursAgo = Date.now() - 2 * 3600000;
+  const fresh = detailFixture({ at: twoHoursAgo, checkedAt: twoHoursAgo }, { cached: false, ageMs: 0 });
   const freshTree = render(DetailModal, { detail: { repo: fresh.repo, loading: false, view: fresh, err: '' }, onClose() {}, onRefresh() {} });
-  assert.match(text(freshTree), /取回于 2 小时前/);
+  assert.match(text(freshTree), new RegExp(`${DETAIL_STAMP_LABELS.body} 2 小时前`));
+  assert.ok(!text(freshTree).includes(DETAIL_STAMP_LABELS.revalidated), '这一问真换了正文还说「刚核对过」⇒ 两个时刻的差别被抹平了');
   const withReset = detailFixture({ at: Date.now() - 1000 }, { cached: false, ageMs: 0, rate: { left: 3, resetAt: Date.now() + 5 * 60000 } });
   assert.match(text(render(DetailModal, { detail: { repo: withReset.repo, loading: false, view: withReset, err: '' }, onClose() {}, onRefresh() {} })),
     /匿名配额剩 3 \/ 60，5 分钟后重置/);
@@ -1620,8 +1635,8 @@ check('client-49 设置卡的现译两档：键位吃载荷、点出去的是严
   assert.deepEqual(btns(base, '描述现译').map(text), ['关', '开'], '两档各一个开/关，档位话术客户端不自己起');
   assert.deepEqual(btns(base, '描述现译').map((b) => hasCls(b, 'on')), [true, false]);
   assert.deepEqual(btns(base, '摘要现译').map((b) => hasCls(b, 'on')), [false, true]);
-  assert.deepEqual(segRows(base), ['检查间隔', '详情缓存', '出网方式', '现译引擎', '描述现译', '摘要现译'],
-    '行序：检查间隔 → 详情缓存（第十二轮加档的地方）→ 出网方式 → 现译引擎 → 现译两档');
+  assert.deepEqual(segRows(base), ['检查间隔', '出网方式', '现译引擎', '描述现译', '摘要现译'],
+    '行序：检查间隔 → 出网方式 → 现译引擎 → 现译两档（第二十七轮：第十二轮那一档撤了，中间那一行跟着没了）');
   const t = text(base);
   assert.ok(t.includes(LLM_SWITCH_LABELS.llmDesc) && t.includes(LLM_SWITCH_LABELS.llmReadme), '每一档那句说明来自载荷');
   assert.ok(t.includes(TRANSLATE_COMMON_NOTE), '这一屏要当场说清「只补内置表没命中的那一句，命中过不重发」');
@@ -1655,7 +1670,7 @@ check('client-49 设置卡的现译两档：键位吃载荷、点出去的是严
       ),
     },
   });
-  assert.deepEqual(segRows(oneRow), ['检查间隔', '详情缓存', '出网方式', '现译引擎', '描述现译', '摘要现译'],
+  assert.deepEqual(segRows(oneRow), ['检查间隔', '出网方式', '现译引擎', '描述现译', '摘要现译'],
     '免费接口那一档现在两行都摆（第十七轮）；开关位仍照库里：描述关、摘要开');
   const oneT = text(oneRow);
   assert.deepEqual(btns(oneRow, '描述现译').map((b) => hasCls(b, 'on')), [true, false], '两行的开关位各自照库里，不许互相顶（按钮序是「关 / 开」）');
@@ -1671,14 +1686,14 @@ check('client-49 设置卡的现译两档：键位吃载荷、点出去的是严
       { translateEngine: 'keyless', llmDesc: true, llmReadme: true },
     ) },
   });
-  assert.deepEqual(segRows(trulyOne), ['检查间隔', '详情缓存', '出网方式', '现译引擎', '描述现译'],
+  assert.deepEqual(segRows(trulyOne), ['检查间隔', '出网方式', '现译引擎', '描述现译'],
     '载荷只登记一行时客户端不许自己补出第二行');
   assert.equal(text(trulyOne).includes('摘要现译'), false);
 
   const legacy = mk({ snap: { translator: undefined } });
   assert.equal(text(legacy).includes('描述现译'), false, '旧宿主载荷没给 translator 键 ⇒ 整段不摆（点了没反应的开关比没有更糟）');
-  assert.deepEqual(segRows(legacy), ['检查间隔', '详情缓存', '出网方式'],
-    '旧宿主只撤现译那几行；详情缓存吃的是入口载荷，这份载荷里带着就照常渲染');
+  assert.deepEqual(segRows(legacy), ['检查间隔', '出网方式'],
+    '旧宿主只撤现译那几行；第二十七轮起详情缓存那一行本来就不在任何一份载荷里（档位撤了）');
 });
 
 check('client-52 设置卡的现译引擎五档 + 各家凭据与注册行：档名吃载荷、密钥只进不回、不吃凭据的档不摆这两行', () => {
@@ -1994,7 +2009,7 @@ check('client-51 现译没成时那一格各说各的；回执有才念，zh 全
   assert.equal(ot.includes('从上面那段英文节选整理'), false, '开关没开过的用户，屏上不该看到任何现译落款话术（第十二轮起那句已经整个不在树上了）');
 });
 
-check('client-53 设置卡：详情缓存一行分段器（第十二轮），选中项读库里的档位，点击发的是那一档', () => {
+check('client-53 设置卡：详情缓存那一行随档位一起撤（第二十七轮裁定），撤行不许带走邻居也不许把旧键发回去', () => {
   const sent = [];
   // 载荷是 loadClient 时烘进 cfg() 的，所以两份载荷要各 load 一次（同 client-45 那组凭据行的做法）
   const S = loadClient().exports.__test.components.SettingsCard;
@@ -2003,22 +2018,35 @@ check('client-53 设置卡：详情缓存一行分段器（第十二轮），选
     saving: false, savedNote: '', savedErr: false, language: prefs.language,
     onLanguage() {}, onInterval() {}, onSave: (p) => sent.push(p),
   });
+  // ★ 库里那一行**真的还躺着** `repoCacheHours: 12`（这台机器改过那一档）⇒ 界面上不认它，
+  //   也不把它写回任何一次 patch：撤档要撤干净，留着一条"读得到但摆不出来"的键就是第二份真相。
   const tree = mk({ intervalMin: 180, topN: 15, keepEvents: 300, language: '', repoCacheHours: 12 });
-  const row = setRow(tree, '详情缓存');
-  assert.ok(row, '设置页没有「详情缓存」这一行 ⇒ 用户改不了缓存时长（第十二轮的裁定落不了地）');
+  assert.equal(setRow(tree, '详情缓存'), undefined, '那一行还在 ⇒ 设置页摆着一个没有任何东西会读它的档位');
+  assert.ok(!/详情缓存|repoCacheHours|cacheHours/.test(clientSrc()), '客户端源码里还留着撤掉的档位名（载荷早就不推它了）');
+
+  // 邻居那一行不许被"撤一行"带走：选中项仍读库里那份，点击只发那一个键
+  const taps = [];
+  const withTap = render(S, {
+    snap: { ...snapFixture(), prefs: { intervalMin: 180, topN: 15, keepEvents: 300, language: '' } },
+    saving: false, savedNote: '', savedErr: false, language: '',
+    onLanguage() {}, onInterval: (v) => taps.push(v), onSave: (p) => sent.push(p),
+  });
+  const row = setRow(withTap, '检查间隔');
+  assert.ok(row, '撤一行撤坏了邻居：检查间隔那一行没了');
   const btns = kidsOf(findByClass(row, 'gt-seg')[0], 'button');
-  assert.deepEqual(btns.map(text), ['6 小时', '12 小时', '24 小时', '3 天'], '档位文案全部来自载荷，界面一个字不写');
-  assert.deepEqual(btns.map((b) => hasCls(b, 'on')), [false, true, false, false], '选中项读的是库里那份，不是出厂值');
+  assert.deepEqual(btns.map((b) => hasCls(b, 'on')), CHECK_INTERVALS.map((v) => v === 180), '选中项读的是库里那份，不是出厂值');
   btns[0].props.onClick();
-  assert.deepEqual(plain(sent), [{ repoCacheHours: 6 }], '点击只发选中的那一档，不许顺手带上别的键');
-  // 出厂那一档 = 24 小时（用户裁定）：载荷里的 defaults 与库里的缺省必须指同一档
-  assert.equal(PAYLOAD.defaults.repoCacheHours, 24);
-  assert.deepEqual(REPO_CACHE_HOURS, [6, 12, 24, 72], '档位是封闭集合，多一档要连着改话术表');
-  // 旧宿主没推 cacheHours ⇒ 这一行整个不摆（一排空按钮比没有更难解释，同出网方式那条判据）
-  const legacy = { ...PAYLOAD }; delete legacy.cacheHours; delete legacy.cacheHourLabels;
-  const legacyTree = mk({ intervalMin: 180, topN: 15, keepEvents: 300, language: '' },
-    loadClient(legacy).exports.__test.components.SettingsCard);
-  assert.equal(setRow(legacyTree, '详情缓存'), undefined, '载荷没给档位还摆这一行 = 摆一排没有文案的按钮');
+  assert.deepEqual(plain(taps), [CHECK_INTERVALS[0]], '间隔那颗按钮点出去的是选中的那一档');
+  assert.deepEqual(plain(sent), [],
+    '除那一个键以外一个字都不许发 —— 顺手带上已经撤掉的 repoCacheHours，就是替用户写了一条没人读的库存');
+
+  // 旧宿主没推 detailStampLabels ⇒ 那句落款整句不摆（不造缺位符，同出网方式那条判据）
+  const legacy = { ...PAYLOAD }; delete legacy.detailStampLabels;
+  const L = loadClient(legacy).exports.__test.components.DetailModal;
+  const v = detailFixture({ at: Date.now() - 2 * 3600000 }, { cached: false, ageMs: 0 });
+  const legacyText = text(render(L, { detail: { repo: v.repo, loading: false, view: v, err: '' }, onClose() {}, onRefresh() {} }));
+  assert.ok(!/取回于|刚核对过/.test(legacyText), '载荷没给词还自己拼出那一句 ⇒ 那两个字的出处变成第二份真相');
+  assert.match(legacyText, /匿名配额剩 41/, '撤掉落款那句时别把同一段的配额读数也带走');
 });
 
 

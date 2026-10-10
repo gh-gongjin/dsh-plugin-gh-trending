@@ -737,14 +737,11 @@ window.__ModuleLoader__.load({
               : '还没有记录'));
     }
 
-    /** 设置：可改项 = 间隔 / 详情缓存时长 / 条数 / 流水保留 / 语言 / 出网方式 / 现译引擎 + 该档凭据与注册地址 / 现译两档 + 只读运行环境。 */
+    /** 设置：可改项 = 间隔 / 条数 / 流水保留 / 语言 / 出网方式 / 现译引擎 + 该档凭据与注册地址 / 现译两档 + 只读运行环境。 */
     function SettingsCard({ snap, saving, savedNote, savedErr, onInterval, onSave, language, onLanguage, proxyUrl, onProxyUrl, credDraft, onCred }) {
       const intervals = cfg().intervals || [];
       const labels = cfg().intervalLabels || {};
       const cur = snap?.prefs?.intervalMin;
-      const cacheHours = cfg().cacheHours || [];
-      const cacheLabels = cfg().cacheHourLabels || {};
-      const curCache = snap?.prefs?.repoCacheHours;
       const range = cfg().topNRange || {};
       const topN = snap?.prefs?.topN;
       const evRange = cfg().keepEventsRange || {};
@@ -823,13 +820,9 @@ window.__ModuleLoader__.load({
             h('span', { className: 'gt-setlabel' }, '检查间隔'),
             h('span', { className: 'gt-seg' }, intervals.map((v) =>
               h('button', { key: v, className: v === cur ? 'on' : '', onClick: () => onInterval(v) }, labels[v] || `${v} 分`)))),
-          // 详情缓存时长（第十二轮，用户裁定「进设置页，默认 24 小时」）：与检查间隔同形状，档位与中文标签都吃载荷。
-          // ★ 载荷没给 cacheHours（旧宿主）就不摆这一行 —— 一排空按钮比没有更难解释（同出网方式那条判据）。
-          //   失败行那 5 分钟不进这里（按裁定留在 domain 的常数里）。
-          cacheHours.length ? h('div', { className: 'gt-setrow' },
-            h('span', { className: 'gt-setlabel' }, '详情缓存'),
-            h('span', { className: 'gt-seg' }, cacheHours.map((v) =>
-              h('button', { key: v, className: v === curCache ? 'on' : '', disabled: saving, onClick: () => onSave({ repoCacheHours: v }) }, cacheLabels[v] || `${v} 小时`)))) : null,
+          // ★ 第二十七轮：这里原来有一行「详情缓存」的四档分段器（第十二轮），已经**整行撤掉**。
+          //   撤的依据不是"没人用"，而是那一档在条件请求之下没有可判的对象：详情现在每次点开都问一次，
+          //   只有 60 秒防连点那一个常数（domain 的 `DETAIL_RECHECK_MS`，按裁定不进设置页，与失败那 5 分钟同一处理）。
           h('div', { className: 'gt-setrow' },
             h('span', { className: 'gt-setlabel' }, '榜单条数'),
             stepper('topN', topN ?? range.min, range.min, range.max, 1, `条（${range.min}–${range.max}，超出榜长即显示全榜）`)),
@@ -1029,7 +1022,18 @@ window.__ModuleLoader__.load({
       const v = detail.view;
       const repo = detail.repo || v?.repo || '';
       const githubUrl = v?.htmlUrl || `https://github.com/${repo}`;
-      const ageText = v ? fmtAge(v.cached ? Date.now() - (Number(v.cacheAgeMs) || 0) : v.at, Date.now()) : '';
+      const stampLabels = cfg().detailStampLabels || {};
+      // ★ 第二十七轮：这一句的时刻**一律吃 `v.at`**（= 上一次真拿到正文的时刻，两条路同一个来源）。
+      //   旧口径按 `v.cached` 分岔（缓存行走 `cacheAgeMs`、新行走 `at`），是因为那时"缓存"意味着"没问过 GitHub"；
+      //   现在缓存行也带着最近一次问的读数，`at` 在两条路上都指同一件事，分岔反而会让同一屏两种写法。
+      const ageText = v ? fmtAge(v.at, Date.now()) : '';
+      // ★ 第二十七轮（用户裁定界面写成「正文取回于 3 天前 · 刚核对过」）：两截词都**只从载荷取**，
+      //   客户端不造缺位符 —— 载荷没给某一截就整截不摆（同出网方式那一行的判据）。
+      //   「刚核对过」只在 `v.revalidated` 为真时出现，而那一格由宿主 `repoView` 判：
+      //   这一次问过 GitHub、正文却没换（304 那条路）才算，所以这一句在界面上永远有出处。
+      const stampBody = stampLabels.body && ageText ? `${stampLabels.body} ${ageText}` : '';
+      const stampReval = v?.revalidated === true ? (stampLabels.revalidated || '') : '';
+      const stampText = [stampBody, stampReval].filter(Boolean).join(' · ');
       const rateLeft = v?.rate?.left;
       // 重置时刻只在「还没到」的时候说：fmtIn 对已过的时刻给「就在下一轮」，那是检查节拍的词，用在配额上是假话
       const resetIn = v?.rate?.resetAt > Date.now() ? fmtIn(v.rate.resetAt, Date.now()) : '';
@@ -1087,7 +1091,7 @@ window.__ModuleLoader__.load({
             v && !v.ok
               ? h('button', { className: 'gt-btn', onClick: onRefresh }, '重新取一次')
               : h('button', { className: 'gt-btn', onClick: onRefresh }, '重新取一次（不走缓存）'),
-            v && v.ok && ageText ? h('span', { className: 'gt-sub gt-num' }, `${v.cached ? '缓存于' : '取回于'} ${ageText}`) : null,
+            v && v.ok && stampText ? h('span', { className: 'gt-sub gt-num' }, stampText) : null,
             h('a', { className: 'gt-link', href: githubUrl, target: '_blank', rel: 'noreferrer' }, '在 GitHub 打开 ↗'),
             v && v.homepage ? h('a', { className: 'gt-link', href: v.homepage, target: '_blank', rel: 'noreferrer' }, '项目主页 ↗') : null)));
     }

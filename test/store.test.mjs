@@ -9,7 +9,7 @@ import { check, runAll, assert, makeFakeFacility } from './_helpers.mjs';
 import {
   createStateStore, createEventStore, createSeenStore, createPrefsStore, createRepoCacheStore, createTransStore, createSearchStore, RECORDS_ERROR,
 } from '../lib/stores.js';
-import { BOARDS, DEFAULT_PREFS, GHT_DOMAIN, REPO_CACHE_MAX, REPO_CACHE_HOURS, REPO_ERROR_LABELS, TRANS_MAX, LLM_KINDS, PREF_CRED_FIELDS, SEARCH_ROW_SHAPE } from '../lib/domain.js';
+import { BOARDS, DEFAULT_PREFS, GHT_DOMAIN, REPO_CACHE_MAX, REPO_ERROR_LABELS, TRANS_MAX, LLM_KINDS, PREF_CRED_FIELDS, SEARCH_ROW_SHAPE } from '../lib/domain.js';
 
 /* ---------------- 造合法行的最小素材 ---------------- */
 const boardRow = (over = {}) => ({
@@ -640,21 +640,30 @@ check('并发：同表多写串行落库，顺序确定且失败不堵队列', a
   assert.deepEqual(BOARDS.map((b) => (all[b] ? 'ok' : 'null')), ['ok', 'ok', 'ok']);
 });
 
-check('prefs：详情缓存时长（第十二轮）只认封闭档位，缺这格的旧库由出厂值补回 24 小时', async () => {
+check('★ prefs：详情缓存档（第十二轮）撤销后，老库里多出来的那一格既不读出来也写不进去（撤档要撤干净）', async () => {
+  // 用户裁定「撤掉这一行，改成固定 60 秒防连点」⇒ 界面上没有那一档，库里就不该再有它的读数（第二份真相）。
+  // ★ 方向性取证在 `tmp/probe-schema-drop.mjs`（真 schema + 真仓储读路径，10-10 留档）：
+  //   未声明的多余键被 record() **静默丢掉**、不报错 ⇒ 老库那一行照常 parse 得过，撤格方向安全。
   const s = mk();
-  for (const h of REPO_CACHE_HOURS) {
-    assert.equal((await s.prefs.patch({ repoCacheHours: h })).repoCacheHours, h, `${h} 小时是档位里的值，不该被换掉`);
-  }
-  // 档位外：回落出厂那一档，不"就近取一档"（替用户选一个他没点过的档，比拒了更糟）
-  for (const bad of [5, 0, 100, 'abc', null]) {
-    const p = await s.prefs.patch({ repoCacheHours: bad });
-    assert.equal(p.repoCacheHours, DEFAULT_PREFS.repoCacheHours, `${JSON.stringify(bad)} 竟然当成一档存下了`);
-  }
-  assert.equal(DEFAULT_PREFS.repoCacheHours, 24, '第十二轮裁定：默认 24 小时');
-  // 第十二轮之前的库存里没有这一格 ⇒ 读出来是出厂档，而不是 undefined（undefined 会让 TTL 现算那一发落空）
-  await s.prefs.read();
-  s.facility.seed('gh_trending', 'prefs', 'prefs', { intervalMin: 60, topN: 15 });
-  assert.equal((await s.prefs.read()).repoCacheHours, 24, '缺格必须补回出厂档');
+  const p = await s.prefs.read();
+  assert.equal('repoCacheHours' in p, false, 'clampPrefs 还在补这一格 ⇒ 载荷里躺着一个界面上没有的档位');
+  assert.equal('repoCacheHours' in DEFAULT_PREFS, false, '出厂偏好里还留着它 ⇒ 撤档只撤了界面，链没拆完');
+
+  // 写路径：patch 的回显吃的是 merged（对**任何**未知键都原样带回，这是既有语义），
+  //   真正入库的那一份过 schema ⇒ 那一格落不进库，下一次 read 就没有它。★ 断的是"存不下来"，不是"不回显"。
+  await s.prefs.patch({ repoCacheHours: 6 });
+  const afterPatch = await s.prefs.read();
+  assert.equal('repoCacheHours' in afterPatch, false, '老键又能被写进库 ⇒ 界面没有它的去处，库里却攒了一份读不出来的历史');
+
+  // 读路径：老库存里真躺着那一格（第十~二十六轮的用户库就是这么一份）⇒ parse 得过，读出来没有它
+  const legacyRow = { ...DEFAULT_PREFS, repoCacheHours: 6, zzUnknownKey: '留给下一版的垃圾' };
+  assert.doesNotThrow(() => GHT_DOMAIN.tables.prefs.valueSchema.parse(legacyRow),
+    '老库里多出来的一格挡在 open 里 ⇒ 三榜全红「存储不可用」（第十三轮那把尺子量的是同一个方向）');
+  s.facility.seed('gh_trending', 'prefs', 'prefs', GHT_DOMAIN.tables.prefs.valueSchema.parse(legacyRow));
+  const back = await s.prefs.read();
+  assert.equal('repoCacheHours' in back, false, '未声明的旧键渗进了运行时 ⇒ 客户端会读到一个界面上摆不出来的档位');
+  assert.equal('zzUnknownKey' in back, false);
+  assert.equal(back.intervalMin, DEFAULT_PREFS.intervalMin, '丢掉多余键的同时不许把声明键也丢了');
 });
 
 check('★ schema 的 open 校验：每张表都必须吃得下"上一版库存里真实存在的那一行"（缺新增键 ≠ 坏行）', () => {

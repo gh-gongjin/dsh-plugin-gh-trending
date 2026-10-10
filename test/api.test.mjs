@@ -23,7 +23,7 @@ import { BOARDS, DEFAULT_PREFS, TRENDING_SOURCE_NOTE, LANG_CHECK, TRANSPORT_HINT
   DEFAULT_TRANSLATE_ENGINE, engineZhLabel, ENGINE_LABEL_ZH, TRANS_ERROR_LABELS,
   // 第二十二轮：榜面那一列的两种来源各有一句落款/一句实话，判据从 domain 取（在测试里手抄就成了第二真相）。
   DESC_ZH_LIVE_NOTE, DESC_ZH_BLOCKED_NOTE, BOARD_ZH_BATCH_MAX,
-  REPO_ERROR_LABELS, REPO_SECTION_LABELS, REPO_README_SOURCE_LABELS, REPO_CACHE_HOURS,
+  REPO_ERROR_LABELS, REPO_SECTION_LABELS, REPO_README_SOURCE_LABELS,
   README_ZH_GATE_SUFFIXES,
   // 第二十三轮：明星那一屏的句子与预算同样从 domain 取（在测试里手抄「未开启」那一句或那个发数，就是第二份真相）。
   STARS_QUOTA_OFF_NOTE, STARS_NO_STORE_NOTE, starsQuotaLine, SEARCH_MAX_PER_ROUND,
@@ -1094,23 +1094,22 @@ check('POST /api/prefs：非法数值由仓储钳回区间（界面拿到的永�
   assert.equal(saved.intervalMin, DEFAULT_PREFS.intervalMin);
 });
 
-check('POST /api/prefs：详情缓存时长（第十二轮）只认封闭档位，档位外直接 400 不入库', async () => {
+check('★ POST /api/prefs：详情缓存档（第十二轮）撤销后，那一格走白名单丢弃 —— 不 400、不入库、不回显', async () => {
   const h = await mkApi();
-  // 出厂就是 24 小时（用户裁定）
-  assert.equal((await h.__stores.prefs.read()).repoCacheHours, 24);
-  for (const [body, want] of [[{ repoCacheHours: 6 }, 6], [{ repoCacheHours: '72' }, 72]]) {
-    const { res } = await call(h, post('/api/prefs', body));
-    assert.equal(res.statusCode, 200, `${JSON.stringify(body)} 是档位里的值，不该拒`);
-    assert.equal(res.json().data.repoCacheHours, want);
-    assert.equal((await h.__stores.prefs.read()).repoCacheHours, want, '没落库的话界面上的档位是画出来的');
-  }
-  // ★ 档位外不许"就近取一档"，也不许让 clampPrefs 悄悄换成 24 而界面上还显示用户点的那格（两份真相）
-  for (const bad of [5, 0, 100, '', 'abc', null]) {
-    const { res } = await call(h, post('/api/prefs', { repoCacheHours: bad }));
-    assert.equal(res.statusCode, 400, `${JSON.stringify(bad)} 竟然存进去了`);
-    assert.match(res.json().error.message, new RegExp(REPO_CACHE_HOURS.join(' | ')));
-  }
-  assert.equal((await h.__stores.prefs.read()).repoCacheHours, 72, '被拒的那几发一个字也不许动库里的值');
+  // 为什么不报 400（第十二轮那一路报）：这一格什么都不决定，脏值不会改变出网对象；
+  //   而 `translateEngine` 的脏值会决定往哪个域名发 ⇒ 那一格必须当场拒。撤档以后重发它是"旧面板的肌肉记忆"，
+  //   给 400 等于让用户的保存按钮凭空失败。
+  const { res } = await call(h, post('/api/prefs', { repoCacheHours: 6 }));
+  assert.equal(res.statusCode, 200, JSON.stringify(res.json()));
+  assert.equal('repoCacheHours' in res.json().data, false, '回执里还带着那一格 ⇒ 界面能读到一个设置页摆不出来的档位');
+  assert.equal('repoCacheHours' in (await h.__stores.prefs.read()), false, '白名单没拦住 ⇒ 库里攒了一条没有出头的键');
+
+  // 只发这一格 = 空 patch：别的键一个字不许被动（同 10-09 那条"读-并-写整行"的律）
+  const before = await h.__stores.prefs.read();
+  await call(h, post('/api/prefs', { repoCacheHours: 72, intervalMin: before.intervalMin }));
+  const after = await h.__stores.prefs.read();
+  assert.deepEqual(Object.keys(after).sort(), Object.keys(before).sort(), '撤档之后补丁的键集不该凭多空出一格');
+  assert.equal(after.topN, before.topN, '带一个不认的键就把别的值一起改了');
 });
 
 /* ---------------- 闸门与错误翻译 ---------------- */
