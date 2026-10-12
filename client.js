@@ -1102,7 +1102,11 @@ window.__ModuleLoader__.load({
       //   这一次问过 GitHub、正文却没换（304 那条路）才算，所以这一句在界面上永远有出处。
       const stampBody = stampLabels.body && ageText ? `${stampLabels.body} ${ageText}` : '';
       const stampReval = v?.revalidated === true ? (stampLabels.revalidated || '') : '';
-      const stampText = [stampBody, stampReval].filter(Boolean).join(' · ');
+      // ★ 第三十轮第三截：只在**防连点窗口命中**（载荷 `cached` 为真 = 这一屏一发都没发）时摆。
+      //   少了它，"这一次没出网"在界面上没有任何可见结果，而「正文取回于 刚刚」会被读成"又拉了一遍"。
+      //   词仍只从载荷取（含那个秒数，domain 按 `DETAIL_RECHECK_MS` 现拼），客户端不自己写数字、不自己判窗口。
+      const stampWindow = v?.cached === true ? (stampLabels.windowHit || '') : '';
+      const stampText = [stampBody, stampReval, stampWindow].filter(Boolean).join(' · ');
       const rateLeft = v?.rate?.left;
       // 重置时刻只在「还没到」的时候说：fmtIn 对已过的时刻给「就在下一轮」，那是检查节拍的词，用在配额上是假话
       const resetIn = v?.rate?.resetAt > Date.now() ? fmtIn(v.rate.resetAt, Date.now()) : '';

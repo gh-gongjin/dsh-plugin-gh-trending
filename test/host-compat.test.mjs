@@ -362,8 +362,8 @@ check('hc-11 入口载荷：webServer 到位才推，字段一个不少', () => 
   assert.deepEqual(v.intervals, CHECK_INTERVALS);
   // ★ 第二十七轮：这里原来是第十二轮那两格（档位名单 + 档位话术表），随那一档整链撤掉 ——
   //   详情改条件请求以后没有任何"时长"可选，载荷里再给一份档位就是界面上摆不出来的第二份真相。
-  assert.deepEqual(v.detailStampLabels, DETAIL_STAMP_LABELS, '那句落款的两个词只在 domain 一份，装配处只递名字');
-  assert.deepEqual(Object.keys(v.detailStampLabels).sort(), ['body', 'revalidated'], '载荷的形状漂了：客户端读的是这两格');
+  assert.deepEqual(v.detailStampLabels, DETAIL_STAMP_LABELS, '那句落款的三个词只在 domain 一份，装配处只递名字');
+  assert.deepEqual(Object.keys(v.detailStampLabels).sort(), ['body', 'revalidated', 'windowHit'], '载荷的形状漂了：客户端读的是这三格');
   assert.equal('cacheHours' in v, false, '载荷还在推档位名单 ⇒ 撤档只撤了界面，链没拆完');
   assert.equal('repoCacheHours' in v.defaults, false, '出厂偏好里还留着那一格');
   assert.deepEqual(v.proxyModes, PROXY_MODES);
@@ -620,9 +620,14 @@ check('hc-20 详情窗口的接线（第二十七轮）：装配处不再交 TTL
   const rp = codeOf('lib/services/repo.js');
   assert.match(rp, /now\(\) - base < DETAIL_RECHECK_MS/, '窗口判据不吃那个常数 ⇒ 60 秒可以在两处各写一个数');
   assert.doesNotMatch(rp, /60 \* 1000|60_000|60000/, 'repo.js 自己写了一个 60 秒的毫秒数（量级写歪本地看不出来）');
-  assert.match(rp, /const prev = !refresh && stored\?\.ok === true \? stored : null;/,
-    '强制刷新那一发必须一个字都不喂 prev：带着旧验证器去问就是"看着像刷新、其实换回 304 的老正文"');
+  assert.match(rp, /const prev = !refresh && stored\?\.ok === true && stored\.zhProbed === true \? stored : null;/,
+    '强制刷新那一发必须一个字都不喂 prev：带着旧验证器去问就是"看着像刷新、其实换回 304 的老正文"；第三十轮再加一条 —— 中文那一档没探完的行也不喂（喂了就 304，一 304 整条探测跳过，半截结论永久冻结）');
+  assert.doesNotMatch(codeOf('client.js'), /\d+ 秒内没再问/, 'client.js 自己写了那第三个词的秒数 ⇒ 窗口时长有了第二处出处，改 DETAIL_RECHECK_MS 时界面会说谎');
   assert.equal(DETAIL_RECHECK_MS, 60 * 1000, '常数本身钉住：写成 60 分或 60 毫秒都不会在本地露出来');
+  // ★ 第三十轮：那第三截里的秒数必须**从常数现拼**。写死 60 的话，哪天改窗口时长（常数改了、句子没改），
+  //   屏上那句「60 秒内没再问 GitHub」就成了谎话 —— 而它在 domain 里，客户端与 index 都抄不到，本地看不出分叉。
+  assert.ok(codeOf('lib/domain.js').includes('windowHit: `${DETAIL_RECHECK_MS / 1000} 秒'),
+    '那句落款的秒数不是从 DETAIL_RECHECK_MS 现拼 ⇒ 窗口时长有了两个出处');
 });
 
 check('hc-21 GitHub 令牌的接线（第二十一轮）：装配处现取现算，令牌的读者只有详情那一路，界面不抄那两个词', () => {

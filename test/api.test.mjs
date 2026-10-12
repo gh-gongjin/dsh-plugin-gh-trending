@@ -1444,15 +1444,22 @@ check('attachZh：描述档只在开关开 + B 没命中 + 确有原文时派；
   }
 });
 
-check('attachZh：第三道闸门（第十九轮）—— `en_default` 但屏上那段已经带着中文 ⇒ 摘要那一发也不派', async () => {
-  // 用户裁定（2026-10-07 第十九轮）：「这两种也算有中文」⇒ 中英混排那档、和中文篇在子目录没抓到的那档，
-  // 都不许再派摘要。★ 三条各钉在**只开摘要档**的现场上（开两档的话描述那一发会把"没派摘要"圆掉，同第十八轮那条假绿的教训）。
-  for (const [excerpt, wantVia, why] of [
-    ['Install the CLI. 中文说明：先运行 npm install，再执行 init 命令即可。', 'cjk',
-      '中英混排（真机 thedotmack/claude-mem 的形状：节选 9 个 CJK，够不上档名那条 20）'],
-    ['English | 中文 | Français — a memory plugin for Claude Code.', 'lang',
-      '语言切换行只有两三个字（ant-design 英文篇整篇 2 个 CJK）⇒ 吃「中文」字样这条'],
-  ]) {
+check('attachZh：第三道闸门（第十九轮立、★ 第三十轮收窄）—— 只有「屏上真摆着中文」那一支挡摘要，「那行写着有中文版」那一支照派；段名那半句两支都给', async () => {
+  // 第十九轮原口径是两支都挡。**第三十轮真机把它推翻**（用户报「开了摘要现译，点开没翻译」）：
+  //   `lang` 说的是"那行写着有中文版"，那是个**推测** —— 推测兑现的仓库档名落在 `zh_file`/`zh_section`，
+  //   上面那一格 `readmeSource === 'en_default'` 已经把活挡住了，`lang` 在派活这一侧从不单独起作用；
+  //   而落到 `en_default` 还带 `lang` 的，正是"推测没兑现"（真机 `debpalash/voicestudio`：中文那份就在根目录
+  //   `README_CN.md`，库里那行被 304 冻在 `en_default`）⇒ 再挡一次的结果是"屏上既没有中文、也没有摘要"。
+  // ★ 段名那半句一个字不动：它说的是**关于这篇 README 的事实**，与派不派活无关（两处问的不是同一件事）。
+  const cases = [
+    ['Install the CLI. 中文说明：先运行 npm install，再执行 init 命令即可。', 'cjk', [],
+      '中英混排（真机 thedotmack/claude-mem 的形状：节选 9 个 CJK，够不上档名那条 20）⇒ 屏上就摆着中文，派出去是白花一发'],
+    ['English | 中文 | Français — a memory plugin for Claude Code.', 'lang', ['readme'],
+      '语言切换行只有两三个字（ant-design 英文篇整篇 2 个 CJK）⇒ 只是"写着有中文版"，手上这篇是英文 ⇒ 照派'],
+    ['VoiceStudio is open source. Website · Download · Docs · Discord · 简体中文 · 日本語 A tour of the Electron app', 'lang', ['readme'],
+      '★ 真机那一屏的形状：7 个 CJK 够不着 8、含「中文」⇒ 只命中 lang ⇒ 照派（第三十轮这条判据就是为用户报的那个现场摆的）'],
+  ];
+  for (const [excerpt, wantVia, wantKinds, why] of cases) {
     const stub = mkTranslatorStub({ enabled: (k) => k === 'readme' });
     const h = await mkApi({
       prefs: { translateEngine: 'host_llm' },
@@ -1460,8 +1467,11 @@ check('attachZh：第三道闸门（第十九轮）—— `en_default` 但屏上
       translator: stub,
     });
     const d = (await call(h, get('/api/repo?name=vitejs/vite'))).res.json().data;
-    assert.deepEqual(stub.jobs, [], `${why} ⇒ 摘要那一发不派｜实派 ${JSON.stringify(stub.jobs.map((j) => j.kind))}`);
-    assert.equal(d.zh.summary, null, '没派活就不该有摘要那一格');
+    assert.deepEqual(stub.jobs.map((j) => j.kind), wantKinds,
+      `${why}｜派活应 = ${JSON.stringify(wantKinds)}｜实派 ${JSON.stringify(stub.jobs.map((j) => j.kind))}`);
+    if (wantKinds.length) assert.equal(d.zh.summary?.text, '模型给的中文',
+      `派了活载荷就该带上那一帧（${why}）｜实得 ${JSON.stringify(d.zh.summary)}`);
+    else assert.equal(d.zh.summary, null, `没派活就不该有摘要那一格（${why}）`);
     assert.ok(d.sections.find((s) => s.key === 'self').label.endsWith(README_ZH_GATE_SUFFIXES[wantVia]),
       `闸门命中而段名没跟着说实话（档名仍念「默认 README 是英文」）⇒ 屏上自相矛盾：via=${wantVia}｜${d.sections.find((s) => s.key === 'self').label}`);
   }

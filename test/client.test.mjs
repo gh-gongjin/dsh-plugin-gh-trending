@@ -2713,4 +2713,28 @@ check('client-69 存储坏了不带走界面：读不到当没存过，写不进
   }
 });
 
+check('client-70 落款第三截只在「60 秒窗口命中」那一屏出现：三截的词全从载荷来，客户端一个都不写', () => {
+  const DetailModal = loadClient().exports.__test.components.DetailModal;
+  const show = (view) => text(render(DetailModal, { detail: { repo: view.repo, loading: false, view, err: '' }, onClose() {}, onRefresh() {} }));
+  const now = Date.now();
+  // ① 窗口命中（`cached: true` = 这一问压根没出网）⇒ 三截齐全，顺序与分隔符照 client.js 那一句
+  const hit = detailFixture({ at: now - 3 * 86400000, checkedAt: now }, { cached: true });
+  assert.equal(hit.cached, true, '夹具没造出"窗口命中"那一格 ⇒ 下面这条断言在测空气');
+  assert.match(show(hit),
+    new RegExp(`${DETAIL_STAMP_LABELS.body} 3 天前 · ${DETAIL_STAMP_LABELS.revalidated} · ${DETAIL_STAMP_LABELS.windowHit}`),
+    '那第三句没接上 ⇒ 用户多点几下看到的还是「刚核对过」，读起来就是"又拉了一遍"');
+  // ② 这一问真问了 GitHub（`cached: false`）⇒ 第三截不许出现：那句「没再问 GitHub」在这一屏是假话
+  const asked = detailFixture({ at: now, checkedAt: now }, { cached: false, ageMs: 0 });
+  const askedText = show(asked);
+  assert.equal(asked.cached, false);
+  assert.ok(!askedText.includes(DETAIL_STAMP_LABELS.windowHit), '刚问过 GitHub 还说"没再问" ⇒ 落款当场说谎');
+  // ③ 旧宿主只推两格（第二十七轮那份载荷）⇒ 第三截整截不摆，前两截照旧，也不炸
+  const twoWords = { ...PAYLOAD, detailStampLabels: { body: DETAIL_STAMP_LABELS.body, revalidated: DETAIL_STAMP_LABELS.revalidated } };
+  const old = detailFixture({ at: now - 3 * 86400000, checkedAt: now }, { cached: true });
+  const oldModal = loadClient(twoWords).exports.__test.components.DetailModal;
+  const oldText = text(render(oldModal, { detail: { repo: old.repo, loading: false, view: old, err: '' }, onClose() {}, onRefresh() {} }));
+  assert.match(oldText, new RegExp(`${DETAIL_STAMP_LABELS.body} 3 天前 · ${DETAIL_STAMP_LABELS.revalidated}`), '少一格词不该把已有的两截也带走');
+  assert.ok(!/秒内没再问/.test(oldText), '载荷没给第三格还自己造一句 ⇒ 那句话的出处又多了第二处');
+});
+
 await runAll('client');

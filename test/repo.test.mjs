@@ -1290,6 +1290,7 @@ check('★ 200 那一问把 GitHub 回的验证器**原样**落库（弱标 W/ �
   assert.equal(row.etagMeta, ETAG_META, '存进去又读不出来等于没存：下一问只能裸发，条件请求整轮白做');
   assert.equal(row.etagReadme, ETAG_RD);
   assert.equal(row.checkedAt, NOW(), '问过的那一刻没落库 ⇒ 60 秒窗口退回按正文时刻判，每点一次问一次');
+  assert.equal(row.zhProbed, true, '第三十轮那一格没跟着落库（schema 或白名单漏了它）⇒ 库里那一行永远自称没探完，每一问都裸发四发');
   assert.equal(row.version ?? 1, 1, '加三格不吃版本号：抬了旧库读不出');
 });
 
@@ -1337,6 +1338,89 @@ check('★ 库里那一行没有验证器（条件请求之前写的老行）⇒
   assert.equal(d.ok, true);
   assert.deepEqual(inmOf(f.seen), ['', '', '', ''], `没有钥匙还去问 ⇒ GitHub 按 If-None-Match 缺失给 200，但空头发出去是坏请求：${JSON.stringify(inmOf(f.seen))}`);
   assert.equal(f.seen.length, 4);
+});
+
+/* ---- 第三十轮（10-12）：304 那一跳不许把「中文那一档」的探测结论冻住 ----
+ * 真机形状（`tmp/r30-probe-cjk.mjs` / `r30-probe-zh-file.mjs` 在 `debpalash/voicestudio` 上抓的读数）：
+ *   库里那一行 `readmeSource=en_default`、两把钥匙齐、`at===checkedAt`，而仓库根目录**就有** `README_CN.md`
+ *   —— 中文那两发当年只走了一半（判定输入缺一半），之后每一问都被 README 的 304 挡在 `probeReadme` 门外，
+ *   那个半截结论就永久冻结了。修法只有一条：库里那一行得说自己「探完了没有」，没探完的下一问不喂验证器。
+ */
+
+check('★ 库里那一行缺「中文那一档探完了」那一格（zhProbed 之前写的老行）⇒ 两把钥匙齐着也不喂，裸发四发，探完把 true 写回', async () => {
+  const seeded = await antRow(NOW() - 86_400_000);
+  assert.equal(seeded.zhProbed, true, '夹具没造出"探完"那一格 ⇒ 下面删掉它就是在测空气');
+  delete seeded.zhProbed;   // 老库里真实存在的形状：那一格根本没有，而两把钥匙是齐的
+  const { svc, f, store } = await mkService({ rows: [seeded], table: antTable() });
+  const d = await svc.load(ANT);
+  assert.equal(d.ok, true);
+  assert.deepEqual(inmOf(f.seen), ['', '', '', ''],
+    `没探完还喂验证器出去 ⇒ README 一 304 整条探测跳过，半截结论永久冻结：${JSON.stringify(inmOf(f.seen))}`);
+  assert.equal(f.seen.length, 4, '闸门没真打开（没探完的行该裸发满四发）');
+  assert.equal(d.readmeSource, 'zh_file', '重判之后中文那份要真找回来');
+  assert.equal((await store.get(ANT)).zhProbed, true,
+    '探完没把 true 写回 ⇒ "下一次多花两发"的一次性代价变成每一问的永久代价');
+});
+
+check('★ 同一行只要那一格是 true 就照旧复用（60 秒外两发带钥匙、正文一个字不动）：闸门只挡"没探完"的', async () => {
+  const seeded = await antRow(NOW() - 86_400_000);
+  const { svc, f } = await mkService({ rows: [seeded], table: antTable() });
+  const d = await svc.load(ANT);
+  assert.equal(f.seen.length, 2, `那一格齐的行还去裸发 ⇒ 省额度白做：发了 ${f.seen.length} 发`);
+  assert.deepEqual(inmOf(f.seen), [ETAG_META, ETAG_RD]);
+  assert.equal(d.at, seeded.at, '正文没换还把「正文取回于」推到"现在"');
+  assert.equal(d.revalidated, true, '这一问只核对了、没换正文 ⇒ 那句「刚核对过」该有得说');
+  assert.equal(d.readmeSource, 'zh_file');
+});
+
+check('★★ 冻结那一形自愈（10-12 那两个读数）：中文那一发当年超时 ⇒ 库里停在 en_default 且 false，下一问裸发重判并翻成 zh_file', async () => {
+  // 第一问吃**探针分支 7** 那一形（合成的只有"GitHub 那一发怎么答"：中文篇那一发 socket hang up，
+  //   读数见 tmp/r30-branches.mjs 的 `src=en_default zhProbed=false 发数=4`）；其余三发全是真夹具。
+  const r = await fetchRepoDetail({
+    repo: ANT, now: NOW,
+    fetchFn: fullTable([{ path: `/repos/${ANT}/contents/README-zh_CN.md`, throw: 'socket hang up', code: 'ECONNRESET' }]),
+  });
+  assert.equal(r.readmeSource, 'en_default');
+  assert.equal(r.zhProbed, false, '超时不是稳定答案 ⇒ 这一行不能自称探完（自称探完就是把同一个冻结换个地方继续冻）');
+  const row = repoCacheRow(r);
+  assert.equal(row.zhProbed, false, 'false 没进库 ⇒ "探到一半"与"从没探过"在库里同形，下一问无从分辨');
+
+  // 第二问走 svc：那道闸门在 `load()` 侧而不在 fetchRepoDetail 里（探针已证直接递 prev 仍会 304）
+  const { svc, f, store } = await mkService({
+    rows: [row], clock: { at: NOW() + 86_400_000 }, table: antTable(),
+  });
+  const d = await svc.load(ANT);
+  assert.deepEqual(inmOf(f.seen), ['', '', '', ''], `那一格是 false 还喂验证器 ⇒ 自愈这一路压根走不通：${JSON.stringify(inmOf(f.seen))}`);
+  assert.equal(d.readmeSource, 'zh_file', '重判一次还没找回中文那份 ⇒ 修了闸门没修结论');
+  assert.equal((await store.get(ANT)).zhProbed, true, '自愈之后要把 true 落回库里，第三问才回到省额度那一路');
+
+  const third = await mkService({ rows: [await store.get(ANT)], clock: { at: NOW() + 2 * 86_400_000 }, table: antTable() });
+  await third.svc.load(ANT);
+  assert.equal(third.f.seen.length, 2, '第三问还在裸发 ⇒ 一次性代价没收敛');
+});
+
+check('★ 那一格的口径逐形钉：判定输入齐了才算探完（六形 true、两形 false，逐形对 probeReadme 头上那条律）', async () => {
+  // 合成的只有"GitHub 那一发怎么答"（404 / 503 / 超时），正文、限额头、其余发数一律吃真夹具；
+  //   八形的实际读数由 tmp/r30-branches.mjs 打出，这里逐形对齐，不手抄也不凭猜。
+  const cases = [
+    ['zh_default（默认篇自己就是中文，没有第二份要找）', WEEKLY, () => fullTable(), true, 'zh_default', []],
+    ['zh_file（仓库另写的那一份 200）', ANT, () => fullTable(), true, 'zh_file', []],
+    ['中文篇 404（仓库写了个坏链接＝稳定答案，不必每问再撞）', ANT, (o) => fullTable(o), true, 'en_default',
+      [{ path: `/repos/${ANT}/contents/README-zh_CN.md`, status: 404, text: '{"message":"Not Found"}' }]],
+    ['zh_section（整篇里的中文小节，零额外请求）', ZK, (o) => zhFixtureFetch(o), true, 'zh_section', []],
+    ['清单 200 且两条路都无线索（"这仓库没有那份"本身就是结论）', VITE, () => fullTable(), true, 'en_default', []],
+    ['README 404（GitHub 明确说没 README：none 是有效答案）', WEEKLY, (o) => fullTable(o), true, 'none',
+      [{ path: `/repos/${WEEKLY}/readme`, status: 404, text: '{"message":"Not Found"}' }]],
+    ['清单 5xx（判定输入缺一半）', VITE, (o) => fullTable(o), false, 'en_default',
+      [{ path: `/repos/${VITE}/contents/`, status: 503, text: '{"message":"service unavailable"}' }]],
+    ['中文篇超时（非稳定答案）', ANT, (o) => fullTable(o), false, 'en_default',
+      [{ path: `/repos/${ANT}/contents/README-zh_CN.md`, throw: 'socket hang up', code: 'ECONNRESET' }]],
+  ];
+  for (const [label, repo, mk, wantProbed, wantSrc, over] of cases) {
+    const d = await fetchRepoDetail({ repo, fetchFn: mk(over), now: NOW });
+    assert.equal(d.zhProbed, wantProbed, `${label} ⇒ 该是 ${wantProbed}，实际 ${d.zhProbed}`);
+    assert.equal(d.readmeSource, wantSrc, `${label} 的档名也跟着变了（该是 ${wantSrc}，实际 ${d.readmeSource}）`);
+  }
 });
 
 check('★★ 不变式：没带验证器却回了 304（中间代理/接口改版）⇒ 立刻裸发重问，绝不把空正文端给界面', async () => {
