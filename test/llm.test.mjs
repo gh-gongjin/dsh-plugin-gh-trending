@@ -14,8 +14,8 @@ import { check, runAll, assert, makeFakeFacility } from './_helpers.mjs';
 import { createLlmTranslator, transSrcKey } from '../lib/services/llm.js';
 import { createTransStore } from '../lib/stores.js';
 import {
-  LLM_KINDS, LLM_MAX_TOKENS, LLM_IN_MAX, LLM_OUT_MAX, LLM_PROMPTS, LLM_ERROR_LABELS,
-  LLM_ERROR_KEYS, LLM_REASONING_EFFORT, DEFAULT_PREFS,
+  LLM_KINDS, LLM_MAX_TOKENS, LLM_IN_MAX_BY_KIND, LLM_OUT_MAX_BY_KIND, LLM_PROMPTS, LLM_ERROR_LABELS,
+  LLM_ERROR_KEYS, LLM_REASONING_EFFORT, DEFAULT_PREFS, MANUAL_KINDS,
 } from '../lib/domain.js';
 import { DESC_ZH_ROWS } from '../lib/desc-zh.js';
 
@@ -97,9 +97,9 @@ check('闸门顺序：未知路数 / 没原文 / 开关关 / 宿主没句柄 —
   assert.equal(noHandle.warns.length, 1, '注入了却没有 stream 时必须 warn 一次（这是"模型不可用"的现场，不是静默降级）');
 });
 
-check('★两档显式全关（不是出厂态：描述那档出厂是开的）⇒ spy 句柄零调用，一次都不发', async () => {
+check('★受开关管的两档显式全关（不是出厂态：描述那档出厂是开的）⇒ spy 句柄零调用，一次都不发', async () => {
   const { t, handle } = mkT({ prefs: { llmDesc: false, llmReadme: false } });
-  for (const kind of LLM_KINDS) {
+  for (const kind of LLM_KINDS.filter((k) => !MANUAL_KINDS.includes(k))) {
     for (let i = 0; i < 3; i += 1) {
       const r = await t.translate({ repo: `${REPO}${i}`, kind, text: DESC_SRC });
       assert.equal(r.errKey, 'off');
@@ -111,6 +111,24 @@ check('★两档显式全关（不是出厂态：描述那档出厂是开的）�
   const on = mkT({ prefs: { llmDesc: true } });
   assert.equal((await on.t.translate({ repo: REPO, kind: 'desc', text: DESC_SRC })).ok, true);
   assert.equal(on.handle.calls.length, 1, '开关开着却一发都没发 ⇒ 上面那个零调用没有证伪力');
+});
+
+check('★手动那两路不受参数设置管（2026-10-10 用户裁定），但就绪态照挡', async () => {
+  // 两档开关全关：那两路照发得出 —— 这三枚按钮的口径是「不受设置控制」，挡它就是句假话。
+  const off = mkT({ prefs: { llmDesc: false, llmReadme: false } });
+  for (const kind of MANUAL_KINDS) {
+    const r = await off.t.translate({ repo: REPO, kind, text: DESC_SRC });
+    assert.equal(r.ok, true, `两档全关时手动那一路不该被开关挡（${kind}）：${JSON.stringify(r)}`);
+  }
+  assert.equal(off.handle.calls.length, MANUAL_KINDS.length, '手动那两路各发一发，不多发');
+  // 绕的是 prefs，不绕就绪态：句柄没了 ⇒ 照样挡，且句柄一次都没被碰。
+  const unready = mkT({ prefs: { llmDesc: false, llmReadme: false }, handle: null });
+  for (const kind of MANUAL_KINDS) {
+    const r = await unready.t.translate({ repo: REPO, kind, text: DESC_SRC });
+    assert.equal(r.ok, false, `宿主没给句柄时手动那一路必须挡（${kind}）`);
+    assert.equal(r.errKey, 'unavailable');
+  }
+  assert.equal(typeof unready.t.enabled('readmeFullZh'), 'boolean', '能力位要从服务读，不许客户端自己判引擎');
 });
 
 /* ------------------------------------------------------------------ *
@@ -135,10 +153,10 @@ check('发出去的那一发：关思考 / temperature 0 / 两档各自 maxToken
   assert.equal(o.model, 'deepseek-flash', 'model 同上：给不到就压根不发（见「没设默认模型」那一条）');
 
   const rd = mkT({ prefs: { llmReadme: true } });
-  await rd.t.translate({ repo: REPO, kind: 'readme', text: 'x'.repeat(LLM_IN_MAX + 500) });
+  await rd.t.translate({ repo: REPO, kind: 'readme', text: 'x'.repeat(LLM_IN_MAX_BY_KIND.readme + 500) });
   const r = rd.handle.calls[0];
   assert.equal(r.maxTokens, LLM_MAX_TOKENS.readme);
-  assert.equal(r.messages[0].content[0].text.length, LLM_IN_MAX, '超长原文要在发出去之前截断');
+  assert.equal(r.messages[0].content[0].text.length, LLM_IN_MAX_BY_KIND.readme, '超长原文要在发出去之前截断');
   assert.equal(r.system, LLM_PROMPTS.readme);
 
   // 自证那一格：留的是**实际交给 stream() 的**，不是事后造的标签
@@ -209,7 +227,7 @@ check('译文质量三道闸门：空 / 没汉字 / 超长 ⇒ 全部原文照�
   const cases = [
     [[text('   '), done()], 'empty'],
     [[text('Next generation frontend tooling.'), done()], 'empty'],   // 回吐英文 ⇒ 宁可显示原文，也不给一句顶着中文标签的英文
-    [[text('字'.repeat(LLM_OUT_MAX + 1)), done()], 'too_long'],
+    [[text('字'.repeat(LLM_OUT_MAX_BY_KIND.desc + 1)), done()], 'too_long'],
   ];
   for (const [frames, want] of cases) {
     const { t } = mkT({ prefs: { llmDesc: true }, handle: mkHandle(frames) });
@@ -219,8 +237,8 @@ check('译文质量三道闸门：空 / 没汉字 / 超长 ⇒ 全部原文照�
     assert.equal(r.note, LLM_ERROR_LABELS[want]);
     assert.ok(LLM_ERROR_KEYS.includes(want));
   }
-  // 边界：正好 LLM_OUT_MAX 收下，多一个字拒收
-  const edge = mkT({ prefs: { llmDesc: true }, handle: mkHandle([text('字'.repeat(LLM_OUT_MAX)), done()]) });
+  // 边界：正好 LLM_OUT_MAX_BY_KIND.desc 收下，多一个字拒收
+  const edge = mkT({ prefs: { llmDesc: true }, handle: mkHandle([text('字'.repeat(LLM_OUT_MAX_BY_KIND.desc)), done()]) });
   assert.equal((await edge.t.translate({ repo: REPO, kind: 'desc', text: DESC_SRC })).ok, true);
 });
 
@@ -397,9 +415,12 @@ check('ready 只说"宿主给没给能 stream 的句柄"；dispose 之后立刻�
   assert.equal(bogus.t.ready(), false, '注入了 llm 但没有 stream ⇒ 按没给处理，别到真发那一发才炸');
 });
 
-check('kinds()：这一档两路都 serve ⇒ 设置页那两行开关都摆（与只有翻译能力那四档的 kinds() 相对，见 web-translate 的 wt-28）', () => {
+check('kinds()：这一档四路全 serve ⇒ 那三枚按钮在宿主档都点得动（与只有翻译能力那四档的 kinds() 相对，见 web-translate 的 wt-28）', () => {
   const on = mkT({ prefs: { llmDesc: true, llmReadme: true } });
   assert.deepEqual(on.t.kinds(), LLM_KINDS, '摘要这一路只有这一档能做（提示词是"整理成一段简体中文摘要"）');
+  // ★ 第二十八轮：置灰那一句由这一格派生（`full-readme.js` 的 manualGateOf 认 kinds()，不认引擎名）。
+  //   宿主档少了整篇那两路中的任何一路，界面上对应那枚按钮就跟着灰掉 —— 所以这一格要单独钉，不能只靠上面那个 deepEqual 顺带过。
+  assert.deepEqual(MANUAL_KINDS.filter((k) => !on.t.kinds().includes(k)), [], '宿主档必须两路整篇都声明：缺一路那枚按钮就该点不动了');
   assert.equal(on.t.enabled('readme'), true, '声明了能力不等于自动开：开关仍照库里那份');
 });
 

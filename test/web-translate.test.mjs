@@ -26,8 +26,9 @@ import {
 import { createTransStore } from '../lib/stores.js';
 import {
   DEFAULT_PREFS, KEYLESS_ENDPOINT, TRANSLATE_ENDPOINTS, TRANS_ERROR_KEYS, TRANS_ERROR_LABELS,
-  TRANS_IN_MAX, TRANS_OUT_MAX, engineZhLabel, TRANSLATE_ENGINES, TRANSLATE_CRED_FIELDS,
+  TRANS_IN_MAX, TRANS_OUT_MAX_BY_KIND, engineZhLabel, TRANSLATE_ENGINES, TRANSLATE_CRED_FIELDS,
   TRANS_ROW_ENGINES, LEGACY_TRANSLATE_ENGINES, TENCENT_REGION, TENCENT_VERSION, ALIYUN_VERSION,
+  MANUAL_KINDS,
 } from '../lib/domain.js';
 
 const KL = JSON.parse(await fixture('trans-keyless.json'));
@@ -405,7 +406,7 @@ check('wt-14 免费档那几种失败各有各的档（并成一句「翻译失�
     [{ body: {} }, 'bad_json'],
     [{ jsonThrows: true, bodyText: '<html>' }, 'bad_json'],
     [{ body: [[[DESC_SRC, DESC_SRC]]] }, 'empty'],
-    [{ body: [[['英'.repeat(TRANS_OUT_MAX + 5)]]] }, 'too_long'],
+    [{ body: [[['英'.repeat(TRANS_OUT_MAX_BY_KIND.desc + 5)]]] }, 'too_long'],
     [{ body: [] }, 'bad_json'],
     [{ body: [[[]]] }, 'empty'],
   ];
@@ -630,7 +631,7 @@ check('wt-27 真机：免费档经本机代理真发一发（SKIP_LOCAL=1 跳过
   assert.equal(svc.peek().lastUrl.includes('translate.googleapis.com'), true);
 });
 
-check('wt-28 这一档 serve 两路：kinds() 报 desc+readme，摘要开关开着的节选真的译（第十七轮放回）', async () => {
+check('wt-28 这一档 serve 三路：kinds() 报 desc+readme+readmeFullZh，摘要开关开着的节选真的译（第十七轮放回 · 第二十八轮补整篇翻译）', async () => {
   // ★ 第十五轮这里曾写 `['desc']`，理由是「逐字译不是摘要」（10-07 那屏译文停在「安装询问你的」）。
   //   **第十七轮用户改判放回**（原话「我前面是有摘要现译的，你在哪一次改坏了，给我放出来」）：
   //   那一发本来就出得来中文，撤掉等于删了人家在用的那一屏。留下的只有措辞 —— 段名说「中文节译」（`domain.summarySectionLabel`），
@@ -638,7 +639,11 @@ check('wt-28 这一档 serve 两路：kinds() 报 desc+readme，摘要开关开�
   const README = 'an english readme excerpt';
   const net = mkNet([{ match: README, body: KL0.body }]);
   const { t } = mkT({ prefs: { llmReadme: true }, net });
-  assert.deepEqual(t.kinds(), ['desc', 'readme'], '这一档 serve 哪几路是设置页那两行开关的唯一真相（api.translatorView 照它摆）');
+  assert.deepEqual(t.kinds(), ['desc', 'readme', 'readmeFullZh'], '这一档 serve 哪几路是设置页那两行开关与详情那三枚按钮的唯一真相（api.translatorView / full-readme 的置灰都照它摆）');
+  // ★ 第二十八轮第 ⑤ 条的判据：**这一档不声明整篇摘要** ⇒ 界面上那枚按钮据此置灰，
+  //   而置灰那句说的是「这一档只会翻译，不会摘要」，不是「开关没开」。少了这一条，免费档会摆出一枚点了只会烧额度的按钮。
+  assert.equal(t.kinds().includes('readmeFullSum'), false, '逐字译的机器翻不出摘要：这一路声明了就是句假话');
+  assert.equal(MANUAL_KINDS.filter((k) => t.kinds().includes(k)).length, 1, '手动那两路在这一档只该声明翻译那一路');
   assert.equal(t.enabled('desc'), true, '声明了能力不代表能发：描述那一路仍照自己的开关（别把闸门做成一刀切）');
   assert.equal(t.enabled('readme'), true, '摘要那一路只认 llmReadme 这一个开关，不再被能力声明挡死');
   const r = await t.translate({ repo: 'a/b', kind: 'readme', text: README });
@@ -652,6 +657,22 @@ check('wt-28 这一档 serve 两路：kinds() 报 desc+readme，摘要开关开�
   const r2 = await t2.translate({ repo: 'a/b', kind: 'readme', text: README });
   assert.equal(r2.errKey, 'off');
   assert.equal(offNet.calls.length, 0, '开关关着还出网 = 白烧用户额度');
+});
+
+check('wt-28b 免费四档的整篇翻译不受参数设置管，但没声明那一路照挡（2026-10-10 裁定「不受参数设置控制」）', async () => {
+  const README_FULL = 'the whole english readme, one long block';
+  // 两档开关全关：`readmeFullZh` 这一路仍然 enabled —— 那枚按钮是用户当场点的，不该被一个看不见的开关管住。
+  const net = mkNet([{ match: README_FULL, body: KL0.body }]);
+  const { t } = mkT({ prefs: { llmDesc: false, llmReadme: false }, net });
+  assert.equal(t.enabled('readmeFullZh'), true, '整篇翻译那一路不查 prefs');
+  const r = await t.translate({ repo: 'a/b', kind: 'readmeFullZh', text: README_FULL });
+  assert.equal(r.ok, true, '开关全关时「译整篇」必须真发得出去');
+  assert.equal(net.calls.length, 1, '这一发该出网一次');
+  // 没声明的那一路（整篇摘要）是**能力**缺失，不是开关：enabled 必须 false，且一发都不许出。
+  assert.equal(t.enabled('readmeFullSum'), false, '这一档不声明摘要 ⇒ 置灰那句得由能力位派生，不能只写在界面上');
+  const r2 = await t.translate({ repo: 'a/b', kind: 'readmeFullSum', text: README_FULL });
+  assert.equal(r2.ok, false);
+  assert.equal(net.calls.length, 1, '没声明的路数还出网 = 点了置灰按钮却烧了额度');
 });
 
 check('wt-29 回执把厂商请求号排在最前：错误体再长也砍不掉那串号（第十六轮）', async () => {

@@ -27,6 +27,8 @@ import { BOARDS, DEFAULT_PREFS, TRENDING_SOURCE_NOTE, LANG_CHECK, TRANSPORT_HINT
   README_ZH_GATE_SUFFIXES,
   // 第二十三轮：明星那一屏的句子与预算同样从 domain 取（在测试里手抄「未开启」那一句或那个发数，就是第二份真相）。
   STARS_QUOTA_OFF_NOTE, STARS_NO_STORE_NOTE, starsQuotaLine, SEARCH_MAX_PER_ROUND,
+  // 第二十八轮：详情那三枚按钮的名单与句子同样从 domain 取（在这里手抄 'expand | translate | summarize' 就是第二份真相）。
+  MANUAL_ACTIONS, MANUAL_ACTION_KIND, MANUAL_ACTIONS_SECTION, MANUAL_RUN_NOTE, MANUAL_GATE_NOTES, manualFailNote,
 } from '../lib/domain.js';
 import { DESC_ZH_ROWS, DESC_ZH_LABEL, DESC_ZH_NOTE, descZhFor } from '../lib/desc-zh.js';
 // ★ 第二十三轮：明星那一屏的装配判据吃的是**同一个纯视图**（`lib/stars.js`）。
@@ -1186,6 +1188,133 @@ check('GET /api/repo：服务抛错按 code 翻成 HTTP（限额/传输这类失
   assert.equal(r2.res.statusCode, 500);
 });
 
+/* ---------------- ★ 第二十八轮：详情那三枚手动按钮的门面侧（manual 那一整格 + 第一条当场花额度的写） ---------------- */
+
+/** 带 README 的详情载荷桩：`readmeSource` / `readmePath` 两格决定那三枚能不能点、以及展开取的是哪一份文档。 */
+const repoViewWithReadme = (name, over = {}) => repoView({
+  ok: true, repo: name, name, desc: 'Next gen tooling', lang: 'TypeScript', stars: 10,
+  readmeSource: 'en_default', readmePath: 'README', ...over,
+});
+
+/** 整篇那一发的桩：返回形状逐格对齐 `repoService.fullReadme` 的成功回包，并把每一发的**入参**记下来。 */
+function mkFullReadmeStub(over = {}) {
+  const calls = [];
+  const fn = async (name, opts) => {
+    calls.push({ name, opts });
+    if (over.fail) return { ok: false, errKey: over.fail.errKey ?? 'transport', errText: over.fail.errText ?? '桩给的失败', at: 7777 };
+    const text = over.text ?? 'the whole readme';
+    return {
+      ok: true, text, chars: text.length, rawChars: over.rawChars ?? 48549, at: 7777,
+      rate: { left: 57, resetAt: 1, limit: 60, authed: false },
+    };
+  };
+  fn.calls = calls;
+  return fn;
+}
+
+check('★ GET /api/repo：成功载荷多挂一整格 manual（三枚按钮 + 库里那两段），而打开这一屏**一发 GitHub 都不派**', async () => {
+  const full = mkFullReadmeStub();
+  const h = await mkApi({ repoService: { load: async (name) => repoViewWithReadme(name), fullReadme: full } });
+  const { res } = await call(h, get('/api/repo?name=a/b'));
+  const d = res.json().data;
+  const p = d.manual;
+  assert.deepEqual(Object.keys(p), ['section', 'runNote', 'actions', 'sections'], '少一格客户端就得自己兜底（那是第二份真相）');
+  assert.equal(p.section, MANUAL_ACTIONS_SECTION, '按钮挂哪一段由载荷说，客户端不认段键');
+  assert.equal(d.sections.some((s) => s.key === MANUAL_ACTIONS_SECTION), true, '段键对不上就一枚按钮都摆不出来（那边改名、这边不跟着改，界面静默少一排）');
+  assert.equal(p.runNote, MANUAL_RUN_NOTE);
+  assert.deepEqual(p.actions.map((a) => a.action), MANUAL_ACTIONS, '顺序吃那一份封闭名单');
+  assert.deepEqual(p.actions.map((a) => a.kind), MANUAL_ACTIONS.map((x) => MANUAL_ACTION_KIND[x]), '每一枚把自己走哪一路一起给：客户端拿它对上回执，不猜映射');
+  // 这一版没给现译服务 ⇒ 选不出引擎：那两枚灰着说「这会儿发不出去」，展开照点（它只吃有没有原文）
+  assert.deepEqual(p.actions.map((a) => a.can), [true, false, false]);
+  assert.deepEqual(p.actions.slice(1).map((a) => a.gate), ['not_ready', 'not_ready'], '「没装配现译」不许念成「这一档只会翻译」');
+  assert.equal(p.actions[1].note, MANUAL_GATE_NOTES.not_ready, '置灰那句是成品句：客户端只念它');
+  assert.deepEqual(p.sections, [], '库里那两行还没有 ⇒ 整段不摆（不是摆一块空壳）');
+  assert.equal(full.calls.length, 0, '读路径不派整篇那一发：打开弹框不该顺手烧一次配额');
+});
+
+check('GET /api/repo：ok:false 的载荷**不挂 manual** —— 坏名字那一屏没有可处理的原文，摆三枚按钮就是让人去点报错', async () => {
+  const full = mkFullReadmeStub();
+  const h = await mkApi({ repoService: { load: async (name) => repoView({ ok: false, repo: name, errKey: 'bad_key', errText: '不像 owner/name', at: 1 }), fullReadme: full } });
+  const { res } = await call(h, get('/api/repo?name=oops'));
+  assert.equal(res.statusCode, 200);
+  assert.equal(res.json().data.ok, false);
+  assert.equal('manual' in res.json().data, false, '挂上去就是让界面在一段错误上面摆三枚按钮');
+  assert.equal(full.calls.length, 0);
+});
+
+check('★ POST /api/repo/readme：action 只认那三个，越界 400 且把合法值念出来；name 没给也是 400；服务没装配是 501 —— 全部零出网', async () => {
+  const full = mkFullReadmeStub();
+  let loads = 0;
+  const h = await mkApi({ repoService: { load: async (name) => { loads += 1; return repoViewWithReadme(name); }, fullReadme: full } });
+  for (const bad of ['', 'expand-all', 'EXPAND', 'translate;drop', 'sum']) {
+    const { res } = await call(h, post('/api/repo/readme', { name: 'a/b', action: bad }));
+    assert.equal(res.statusCode, 400, `action=${JSON.stringify(bad)} 该当场拒：脏值悄悄落进别的一支，用户点摘要、屏上多半篇英文`);
+    assert.equal(res.json().error.code, 'INVALID_PARAM');
+    for (const legal of MANUAL_ACTIONS) {
+      assert.ok(res.json().error.message.includes(legal), `越界时要把合法值念出来（同 translateEngine 那一条）：缺 ${legal}`);
+    }
+  }
+  assert.equal(loads, 0, '闸门挡掉的那些连详情服务都不该碰');
+  assert.equal((await call(h, post('/api/repo/readme', { action: 'expand' }))).res.statusCode, 400, '缺 name');
+  assert.equal((await call(h, post('/api/repo/readme', { name: '   ', action: 'expand' }))).res.statusCode, 400, '全是空格也算没给');
+  assert.equal(full.calls.length, 0);
+
+  const bare = await mkApi();   // repoService 没装配：501 而不是 500、也不是给一面空载荷
+  const notAssembled = await call(bare, post('/api/repo/readme', { name: 'a/b', action: 'expand' }));
+  assert.equal(notAssembled.res.statusCode, 501);
+  assert.equal(notAssembled.res.json().error.code, 'GHT_RECORDS_UNAVAILABLE');
+});
+
+check('★ POST /api/repo/readme 从别机来是 403：这是第一条由浏览器发起、当场花额度的写，闸在路由表上', async () => {
+  const full = mkFullReadmeStub();
+  const h = await mkApi({ repoService: { load: async (name) => repoViewWithReadme(name), fullReadme: full } });
+  const lan = { remoteAddress: '192.168.1.20' };
+  const { res } = await call(h, post('/api/repo/readme', { name: 'a/b', action: 'translate' }, lan));
+  assert.equal(res.statusCode, 403);
+  assert.equal(res.json().error.code, 'FORBIDDEN');
+  assert.match(res.json().error.message, /本机回环/);
+  assert.equal(full.calls.length, 0, '挡在闸门上，不是挡在服务费之后');
+  // 那句 403 的文案不许穷举方法名（本轮加了第三条写操作，穷举的名单当时就成旧话）
+  assert.equal(res.json().error.message.includes('触发检查'), false, '文案里还点名旧的那两条 ⇒ 新增的写操作在界面是隐形的');
+  assert.equal(ROUTES['POST /api/repo/readme'].loopback, true);
+});
+
+check('★ POST /api/repo/readme（展开）：path 从 svc.load 的载荷透给那一发（客户端不递裸串），回执里再带一整格 manual', async () => {
+  const full = mkFullReadmeStub({ text: '整篇的正文' });
+  const h = await mkApi({
+    repoService: { load: async (name) => repoViewWithReadme(name, { readmePath: 'docs/README.md' }), fullReadme: full },
+  });
+  await h.__stores.trans.put({ repo: 'a/b', kind: 'readmeFullZh', src: 'deadbeefdeadbeef:12', zh: '库里那一篇译文', at: 7777, chars: 7, engine: 'keyless' });
+  const { res } = await call(h, post('/api/repo/readme', { name: 'a/b', action: 'expand' }));
+  assert.equal(res.statusCode, 200, JSON.stringify(res.json()));
+  const d = res.json().data;
+  assert.deepEqual(full.calls, [{ name: 'a/b', opts: { path: 'docs/README.md' } }],
+    '那一发拿的是**屏上那一篇**的 path：客户端只报仓库与动作，路径由宿主从详情视图给（脏路径就是往别的文件发）');
+  assert.equal(d.ok, true);
+  assert.equal(d.text, '整篇的正文');
+  assert.deepEqual(d.blocks.map((b) => b.kind), ['excerpt', 'num'], '展开覆盖的那两块由宿主点名，客户端不自己判该换哪一块');
+  assert.deepEqual(d.legs, { gh: 1, out: 0 }, '展开只花 GitHub 一发：翻译那几发压根没开始，账上不许并成一个数');
+  assert.deepEqual(Object.keys(d.manual), ['section', 'runNote', 'actions', 'sections'], '回执带的是**整屏**：置灰口径与库里那两行都可能跟着这一趟变');
+  assert.deepEqual(d.manual.sections.map((s) => s.kind), ['readmeFullZh'], '展开不产生那两段：屏上出现的是库里那一行，不是这一趟取回的原文');
+  assert.equal(d.manual.sections[0].zh, '库里那一篇译文');
+});
+
+check('POST /api/repo/readme：这一趟重走的 svc.load 坏了 ⇒ 200 交回 errKey + **那一句成品**，整篇那一发零调用', async () => {
+  const full = mkFullReadmeStub();
+  const h = await mkApi({
+    repoService: { load: async (name) => repoView({ ok: false, repo: name, errKey: 'rate_limited', errText: '限额用尽（403）', at: 1 }), fullReadme: full },
+  });
+  const { res } = await call(h, post('/api/repo/readme', { name: 'a/b', action: 'expand' }));
+  assert.equal(res.statusCode, 200, '按下去没跑成是这一趟的结果，不是接口坏了');
+  const d = res.json().data;
+  assert.equal(d.ok, false);
+  assert.equal(d.errKey, 'rate_limited');
+  assert.deepEqual(d.notes, [manualFailNote('rate_limited', '限额用尽（403）')],
+    'notes 空着就成了「用户按下一枚按钮、屏幕上毫无反应」：这一屏只有这一组回执会说「这一趟没跑成」');
+  assert.equal(full.calls.length, 0, '详情都没取到就不该再去问整篇那一发：那是第二次花配额');
+  assert.equal('manual' in d, false, '没跑成的这一趟给不出整屏：按钮那一份还以详情载荷为准');
+});
+
 /* ---------------- 详情载荷的现译那一路（attachZh：C 只补 B 没命中的行） ---------------- */
 
 /** 假现译服务：记下每一发的 {repo,kind,text,force}，按需回帧。 */
@@ -1209,8 +1338,9 @@ function mkTranslatorStub({ ok = true, zh = '模型给的中文', at = 7777, not
 function mkWebStub({ zh = '机器给的中文', engine = 'keyless', at = 7777, enabled, ready = true } = {}) {
   const jobs = [];
   // ★ 第十五轮曾写 `() => ['desc']`（那一档不派摘要）；**第十七轮用户改判放回** ⇒ 两路都报。
-  //   真那一路的 `kinds()` 现在就是这两档，`:897` 那条"桩 = 真服务"的对齐判据跟着走。
-  const kinds = () => ['desc', 'readme'];
+  // ★ 第二十八轮补 `readmeFullZh`（那枚「译整篇」在免费档点得动），但**不补 `readmeFullSum`** —— 逐字译的机器翻不出摘要，
+  //   界面上那枚按钮据此置灰。真那一路的 `kinds()` 就是这三档，下面那条"桩 = 真服务"的对齐判据跟着走。
+  const kinds = () => ['desc', 'readme', 'readmeFullZh'];
   return {
     jobs,
     ready: () => ready,
@@ -1594,6 +1724,10 @@ check('假那两路桩的能力声明 = 真服务的声明（形状不对齐时�
   assert.equal(real.enabled('desc'), true);
   assert.equal(createWebTranslator({ getPrefs: () => ({ ...DEFAULT_PREFS, llmDesc: true, llmReadme: false }) }).enabled('readme'), false,
     '开关关着 ⇒ 不派：放回的是能力，不是自动派活');
+  // ★ 第二十八轮：详情那三枚按钮的置灰口径由这一格派生 —— 免费档声明得出整篇翻译、声明不出整篇摘要。
+  //   这两条判据是**上一段那条 deepEqual 的靶子**：桩里多写或少写一路，这里必红。
+  assert.equal(real.enabled('readmeFullZh'), true, '「译整篇」在免费档点得动（逐字译本来就做得）');
+  assert.equal(real.enabled('readmeFullSum'), false, '这一档不声明摘要 ⇒ 那枚按钮该灰，且灰得出发不出');
 });
 
 check('库里没 translateEngine 这一格（第九轮之前存的库）：按出厂那档派活，不整屏报错', async () => {
@@ -1894,12 +2028,16 @@ check('readBody：拼流、超大体拒收、__parsedBody 逃生舱只给测试'
 
 check('路由表本身：登记的方法与闸门口径一致（写全闸 + 花配额的 GET 也闸，纯读面板的 GET 不闸）', () => {
   assert.deepEqual(Object.keys(ROUTES).sort(), [
-    'GET /api/events', 'GET /api/prefs', 'GET /api/repo', 'GET /api/snapshot', 'GET /api/stream', 'POST /api/check', 'POST /api/prefs',
+    'GET /api/events', 'GET /api/prefs', 'GET /api/repo', 'GET /api/snapshot', 'GET /api/stream',
+    'POST /api/check', 'POST /api/prefs', 'POST /api/repo/readme',
   ]);
   assert.ok(Object.keys(ROUTES).every((k) => k.startsWith('GET ') || k.startsWith('POST ')));
   const gated = Object.entries(ROUTES).filter(([k, v]) => v.loopback === true || k.startsWith('POST ')).map(([k]) => k).sort();
-  assert.deepEqual(gated, ['GET /api/repo', 'POST /api/check', 'POST /api/prefs'],
+  assert.deepEqual(gated, ['GET /api/repo', 'POST /api/check', 'POST /api/prefs', 'POST /api/repo/readme'],
     '闸的是"会替调用方动东西"的入口：写操作 + 会烧匿名配额的详情读');
+  // ★ 第二十八轮那一条 POST 是「替用户跑一整趟出网（最多 40 发翻译）」的入口 ⇒ 它自己就得标 loopback，
+  //   不许只靠上面那条「是 POST 就闸」的顺带规则：那条口径哪天改，这一发就从别的机器也能点了。
+  assert.equal(ROUTES['POST /api/repo/readme'].loopback, true, '闸门口径要写在路由上，不写在方法名前缀里');
   const unGated = Object.keys(ROUTES).filter((k) => !k.startsWith('POST ') && ROUTES[k].loopback !== true);
   assert.deepEqual(unGated.sort(), ['GET /api/events', 'GET /api/prefs', 'GET /api/snapshot', 'GET /api/stream'],
     '纯读面板的不闸，真机排障要从别机看得清');

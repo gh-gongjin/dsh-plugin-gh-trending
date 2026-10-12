@@ -507,7 +507,18 @@ check('trans：schema 挡脏行 —— kind 只认封闭集合，空原文/空�
   await assert.rejects(() => s.trans.put(transRow({ zh: '' })), (e) => e.code === RECORDS_ERROR.INVALID);
   await assert.rejects(() => s.trans.put(transRow({ at: '昨天' })), (e) => e.code === RECORDS_ERROR.INVALID);
   assert.equal(s.facility.rowCount('gh_trending', 'trans'), 0, '被拒的那几行一行都不许留在库里');
-  assert.deepEqual(LLM_KINDS, ['desc', 'readme'], '枚举加了新档就要连这条一起看：闸门只认这一份');
+  assert.deepEqual(LLM_KINDS, ['desc', 'readme', 'readmeFullZh', 'readmeFullSum'], '枚举加了新档就要连这条一起看：闸门只认这一份');
+  // ★ 第二十八轮：那两路整篇必须**真存得进来** —— 只把名字加进名单、闸门却把行拒掉，那一趟跑完的译文就原地丢了，
+  //   而界面上一切照旧（`full-readme.js` 会把 `stored:false` 那句念出来，但没人点开那一趟就看不见）。
+  await s.trans.put(transRow({ kind: 'readmeFullZh', zh: '一整篇的译文' }));
+  await s.trans.put(transRow({ kind: 'readmeFullSum', zh: '一整篇的摘要' }));
+  assert.equal((await s.trans.get('readmeFullZh', 'tester-army/e2e')).zh, '一整篇的译文');
+  assert.equal((await s.trans.get('readmeFullSum', 'tester-army/e2e')).zh, '一整篇的摘要', '两路各占一行，主键是 kind:仓库，不许互相盖');
+  assert.equal(s.facility.rowCount('gh_trending', 'trans'), 2);
+  // 整篇译文那一行就是长文（`MANUAL_FULL_ZH_MAX` 在写入侧挡到 30,000 字）：这张表的 `zh` 没有第二道长度闸门
+  await s.trans.put(transRow({ kind: 'readmeFullZh', zh: '字'.repeat(30000) }));
+  assert.equal((await s.trans.get('readmeFullZh', 'tester-army/e2e')).zh.length, 30000,
+    '存不进来长文 ⇒ 那一趟的结果被这张表悄悄裁掉，屏上那句「已存下来」就是假话');
   // 未声明字段存不进来（译文表特别要紧：多存一份"模型的自言自语"没人会去读它）
   await s.trans.put({ ...transRow(), 顺手加的字段: 'x' });
   assert.equal((await s.trans.get('desc', 'tester-army/e2e'))['顺手加的字段'], undefined);

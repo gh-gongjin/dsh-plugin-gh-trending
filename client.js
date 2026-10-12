@@ -253,7 +253,9 @@ window.__ModuleLoader__.load({
   font-family:inherit;font-size:15px;line-height:1;padding:3px 8px;border-radius:6px;cursor:pointer}
 .gt-modal-x:hover{color:var(--gt-fg);background:var(--gt-hover)}
 .gt-modal-b{padding:12px 14px;display:flex;flex-direction:column;gap:10px;min-width:0}
-.gt-modal-h2{font-size:11px;font-weight:600;color:var(--gt-muted);letter-spacing:.3px}
+.gt-modal-h2{display:flex;align-items:center;gap:8px;flex-wrap:wrap;font-size:11px;font-weight:600;color:var(--gt-muted);letter-spacing:.3px}
+/* 详情段名行右侧那三枚（第二十八轮）：只有一条规则，段名与按钮的排布靠上面那条 flex */
+.gt-acts{margin-left:auto;display:flex;align-items:center;gap:6px;flex-wrap:wrap}
 /* 段名与它的正文是一组：块级 div 之间没有 gap，两组会挤成一坨（真机截图抓到） */
 .gt-modal-sec{display:flex;flex-direction:column;gap:6px;min-width:0}
 .gt-modal-p{margin:0;line-height:1.65;overflow-wrap:anywhere}
@@ -374,6 +376,28 @@ window.__ModuleLoader__.load({
     }
     /** 详情对话框的空闲态：模块级常量，关闭与初始都归它，免得两处各写一份形状。 */
     const IDLE_DETAIL = { repo: '', loading: false, view: null, err: '' };
+    /**
+     * 详情那三枚手动按钮的空闲态（第二十八轮）：模块级常量，同 `IDLE_DETAIL` 一条律，关掉弹框就归它。
+     * · `running` 正在跑的那一枚动作名（空串 = 没在跑）；跑着的时候三枚一起按住 —— 同一趟要花的额度只有一份。
+     * · `receipts` 按动作分格的那几份回执（`{expand:{...}, translate:{...}}`）：展开那一份整篇正文、以及每一趟的 `notes`
+     *   只活到这里 —— 整篇正文本来就不入库，「关掉弹框就丢」是宿主那句 `manualExpandedMeta` 先说好的。
+     * · `man` 最近一次**回执带回来的整屏形状**（`{section, runNote, actions, sections}`）：跑完那一趟以后
+     *   置灰口径可能跟着变（档位换了、库里刚落了一行），所以以回执那一份为准；没有它才读详情载荷的 `v.manual`。
+     * · `err` 请求**本身**坏了（连回执都没拿到）—— 与「跑完了但没成」是两件事，后者那句在 `notes` 里。
+     */
+    const IDLE_MANUAL = { running: '', receipts: null, man: null, err: '' };
+    /**
+     * 展开那一趟换掉那两块（节选框 + 那句元数据）：`exp.blocks` 是宿主在回执里给的两块字面，客户端只按 `kind` 对齐覆盖。
+     * ★ 不自己判「这一段该显示什么」：换哪两块、换成什么字，全在 `lib/services/full-readme.js` 那一趟的回执里。
+     * ★ 段里没有对应那块时**补在末尾**（比如去标记以后压根没有节选块）：整篇取回来了却没处摆，比多摆一块糟。
+     */
+    function expandBlocks(blocks, exp) {
+      const list = blocks || [];
+      const ov = (exp && exp.blocks) || [];
+      const out = list.map((b) => ov.find((o) => o.kind === b.kind) || b);
+      ov.forEach((o) => { if (!out.some((x) => x.kind === o.kind)) out.push(o); });
+      return out;
+    }
     /** 合并 = 整体替换快照。update 帧就是 GET snapshot 的同形载荷，凭空补字段一律禁止（S17 教训）。 */
     function mergeFrame(prev, frame) {
       if (frame && typeof frame === 'object' && frame.kind === 'event') return prev;
@@ -1017,8 +1041,11 @@ window.__ModuleLoader__.load({
      *   第十二轮起段对象没有 `source` 这一格，界面上也没有那一句来源落款 —— 不是这里少摆了一块）。
      * 这里一个字不加：不判"这一段该显示成什么"、不自己拼「中文描述（…）：」那种带来源标签的整句、不排段序。
      * 三种没内容的样子各说各的：还在取（loading）、请求本身坏了（err）、取回来了但 ok:false（view.error）。
+     * ★ 第二十八轮：README 那一段的段名行右侧多了三枚常驻按钮，它们的位置、名字、能不能点、为什么不能点
+     *   全在载荷 `v.manual` 的 `section` / `actions[].{action,kind,label,can,note}` 里，那两段的段名与正文在 `manual.sections`；
+     *   跑完这一趟说了什么只在回执的 `notes` 里 —— 客户端不数发数、不排名单、不拼句、不判哪一档做得了摘要。
      */
-    function DetailModal({ detail, onClose, onRefresh }) {
+    function DetailModal({ detail, manual, onManual, onClose, onRefresh }) {
       const v = detail.view;
       const repo = detail.repo || v?.repo || '';
       const githubUrl = v?.htmlUrl || `https://github.com/${repo}`;
@@ -1044,6 +1071,19 @@ window.__ModuleLoader__.load({
         ? `${v.rate.label}剩 ${rateLeft} / ${v.rate.limit}${resetIn ? `，${resetIn}重置` : ''}`
         : '';
       const sections = v?.ok === true ? (Array.isArray(v.sections) ? v.sections : []) : [];
+      // ★ 第二十八轮那三枚：整格形状由载荷给（`section` = 挂在哪一段、`actions` = 三枚、`sections` = 那两段、`runNote` = 正在跑那句）。
+      //   跑完一趟以后**以回执里那一份为准**（置灰口径与库里那一行都可能跟着变），没跑过才读详情载荷的 `v.manual`。
+      //   两处都没有 = 这个宿主没装配这一路 ⇒ 一枚按钮都不摆，也不自己补一份名单。
+      const man = manual?.man || v?.manual || null;
+      const receipts = manual?.receipts || {};
+      const running = manual?.running || '';
+      // 展开那一份是**当场跑的整篇**（不入库）：只有它跑成才覆盖节选那两块，跑失败的句子在下面那组回执里念。
+      const expanded = receipts.expand?.ok === true ? receipts.expand : null;
+      const noteLines = (list) => (list || []).map((n, i) => h('p', { key: `mn${i}`, className: 'gt-modal-p gt-sub' }, n));
+      // 每一趟说了什么：只念回执里的 `notes`（成功与失败都在那一格里，句子由 domain 单点拼好），顺序吃载荷的 `actions`。
+      const receiptGroups = () => (man?.actions || [])
+        .map((a) => ({ label: a.label, notes: Array.isArray(receipts[a.action]?.notes) ? receipts[a.action].notes : [] }))
+        .filter((g) => g.notes.length);
       useEffect(() => {
         const onKey = (e) => escClose(e, onClose);
         document.addEventListener('keydown', onKey);
@@ -1077,15 +1117,44 @@ window.__ModuleLoader__.load({
                   h('div', null, v.error || '详情没取到'),
                   v.errText ? h('div', { className: 'gt-sub' }, v.errText) : null)
               : null,
-            sections.map((sec) => h('div', { key: sec.key, className: 'gt-modal-sec' },
-              h('div', { className: 'gt-modal-h2' }, sec.label),
-              (sec.blocks || []).map((b, i) => detailBlock(sec.key, i, b)),
-              (sec.facts || []).length
-                ? h('dl', { className: 'gt-modal-facts' }, sec.facts.map((f) => [
-                    h('dt', { key: `d${f.key}` }, f.label),
-                    h('dd', { key: `v${f.key}` }, f.value),
-                  ]))
-                : null)),
+            sections.map((sec) => {
+              const isHost = man != null && sec.key === man.section;
+              const blocks = isHost && expanded ? expandBlocks(sec.blocks, expanded) : (sec.blocks || []);
+              return h('div', { key: sec.key, className: 'gt-modal-sec' },
+                isHost
+                  ? h('div', { className: 'gt-modal-h2' },
+                      h('span', null, sec.label),
+                      h('span', { className: 'gt-acts' },
+                        (man.actions || []).map((a) => h('button', {
+                          key: a.action,
+                          className: 'gt-btn',
+                          // ★ 三枚常驻：不能点的那一枚按下去没有副作用（用户裁定），而 `title` 会念出为什么按不动。
+                          //   跑着的时候三枚一起按住 —— 同一趟要花的额度只有一份，连点两枚就是花两份。
+                          disabled: a.can !== true || running !== '',
+                          title: a.note || '',
+                          onClick: () => onManual(a.action),
+                        }, a.label))))
+                  : h('div', { className: 'gt-modal-h2' }, sec.label),
+                blocks.map((b, i) => detailBlock(sec.key, i, b)),
+                (sec.facts || []).length
+                  ? h('dl', { className: 'gt-modal-facts' }, sec.facts.map((f) => [
+                      h('dt', { key: `d${f.key}` }, f.label),
+                      h('dd', { key: `v${f.key}` }, f.value),
+                    ]))
+                  : null);
+            }),
+            // ★ 那两段（整篇译文 / 整篇摘要）：段名连落款都由宿主拼定，库里没那一行就没有那一段（不是这里少摆一块）。
+            //   摆的是 `.gt-modal-readme` 那一格：译文是按段拼回来的，`white-space:pre-wrap` 才保得住段落，滚动条在这块自己身上。
+            ((man?.sections) || []).map((s) => h('div', { key: `gt-man-${s.kind}`, className: 'gt-modal-sec' },
+              h('div', { className: 'gt-modal-h2' }, s.label),
+              h('div', { className: 'gt-modal-readme' }, s.zh))),
+            // 那一趟说了什么（出网账 / 熔断 / 汇总没成 / 没落库 / 闸门挡掉）：一小段一组，组名吃按钮自己的 `label`。
+            receiptGroups().map((g) => h('div', { key: `gt-mn-${g.label}`, className: 'gt-modal-sec' },
+              h('div', { className: 'gt-modal-h2' }, g.label),
+              noteLines(g.notes))),
+            running ? h('p', { className: 'gt-modal-p gt-sub' }, man?.runNote || '') : null,
+            manual?.err
+              ? h('div', { className: 'gt-notice gt-notice-err' }, manual.err) : null,
             v && v.ok && rateText ? h('p', { className: 'gt-modal-p gt-sub gt-num' }, rateText) : null),
           h('div', { className: 'gt-modal-f' },
             v && !v.ok
@@ -1119,6 +1188,9 @@ window.__ModuleLoader__.load({
       // 凭据草稿：三家六格共用一个 map（键 = 偏好里的键名）。★ 密钥格永不回填、发完即清（`null` = 一格都没动过）。
       const [credDraft, setCredDraft] = useState(null);
       const [detail, setDetail] = useState(IDLE_DETAIL);
+      // 详情那三枚按钮那一屏的临时态（第二十八轮）：整篇正文不入库、没落库的那一份也不入库，所以只活到关掉弹框
+      const [manual, setManual] = useState(IDLE_MANUAL);
+      const manualBusy = useRef(false);
       // 迟到的那一份不该盖掉人后来点的那一份：每开一次就换号，回来时对不上号就丢
       const detailSeq = useRef(0);
       useStream(setSnap, setConn);
@@ -1161,9 +1233,13 @@ window.__ModuleLoader__.load({
       /**
        * 开详情：先落「正在取」再发请求（这一发最多四出网，不给回执就等于让人对着静止的屏幕等）。
        * keep=true 是「重新取一次」：旧内容留在屏幕上，只在按钮旁长个「正在取」，不把已有解释抹掉。
+       * ★ 第二十八轮：两条目都把手动那一屏的清干净 —— 换仓库与重取正文之后，上一份整篇正文与上一趟的回执
+       *   说的都不是屏上这一份了（宿主那句「关掉弹框就丢」同一个道理）。
        */
       async function loadDetail(repo, { refresh = false, keep = false } = {}) {
         const seq = (detailSeq.current = (detailSeq.current || 0) + 1);
+        manualBusy.current = false;
+        setManual(IDLE_MANUAL);
         setDetail(keep ? { repo, loading: true, view: detail.view, err: '' } : { repo, loading: true, view: null, err: '' });
         try {
           const v = await api(`/repo?name=${encodeURIComponent(repo)}${refresh ? '&refresh=1' : ''}`);
@@ -1174,9 +1250,43 @@ window.__ModuleLoader__.load({
           setDetail({ repo, loading: false, view: null, err: e?.message ?? String(e) });
         }
       }
+      /**
+       * 详情那三枚按钮：发一发 `POST /api/repo/readme`，**当场等它跑完再回执**（交付形状：没有进度条、没有取消，
+       * 关掉弹框也不打断它 —— 宿主那一趟跑完照样把整篇那一行存下来，屏上这句由载荷里的 `runNote` 来说）。
+       * ★ 迟到与关框作废同 `loadDetail` 一条律：认 `detailSeq`，号对不上就不属于屏上这个弹框。
+       * ★ 连点挡在 ref 上而不是 state 上：异步回调里读到的 `manual.running` 可能还是旧的，而这一趟花的额度是真钱
+       *   （宿主侧 `inflight` 那一道挡的是**同一枚**的并发，这里挡的是这一屏的连点，两边各管各的）。
+       */
+      async function runManual(action) {
+        if (!action || !detail.repo || manualBusy.current) return;
+        manualBusy.current = true;
+        const seq = detailSeq.current;
+        setManual((m) => ({ ...m, running: action, err: '' }));
+        let r = null;
+        let err = '';
+        try {
+          r = await api('/repo/readme', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ name: detail.repo, action }),
+          });
+        } catch (e) {
+          err = e?.message ?? String(e);   // 请求本身坏了（连回执都没拿到）：与「跑完了但没成」两件事，后者那句在 notes 里
+        } finally {
+          manualBusy.current = false;
+        }
+        if (detailSeq.current !== seq) return;
+        setManual((m) => ({
+          running: '',
+          receipts: { ...(m.receipts || {}), [action]: r ?? { ok: false, action, notes: [] } },
+          man: r?.manual || m.man,
+          err,
+        }));
+      }
       function closeDetail() {
         detailSeq.current = (detailSeq.current || 0) + 1;   // 关掉的这一刻起，迟到的回执一律作废
         setDetail(IDLE_DETAIL);
+        setManual(IDLE_MANUAL);                              // 整篇正文与没落库的那一份本来就只活到这个弹框
       }
 
       async function savePrefs(patch) {
@@ -1225,6 +1335,8 @@ window.__ModuleLoader__.load({
         opened
           ? h(DetailModal, {
               detail,
+              manual,
+              onManual: runManual,
               onClose: closeDetail,
               onRefresh: () => loadDetail(detail.repo, { refresh: true, keep: true }),
             })
@@ -1251,7 +1363,7 @@ window.__ModuleLoader__.load({
     exports.PANEL_ID = PANEL_ID;
     exports.__test = {
       cfg, API_BASE, BOARDS, boardLabel, fmtAge, fmtIn, fmtCount, deltaCell, kindLabel, mergeFrame, api, consumeSse, TABS,
-      repoLinkProps, escClose, IDLE_DETAIL, addedCell, starsPick,
+      repoLinkProps, escClose, IDLE_DETAIL, IDLE_MANUAL, expandBlocks, addedCell, starsPick,
       components: {
         Header, TabBar, OverviewTab, BoardMini, StatusCard, BoardCard, CrossCard,
         EventsCard, SettingsCard, EnvCard, RankBadge, DetailModal, GhTrendingPage, StarsCard,

@@ -35,6 +35,9 @@ import {
   STARS_NO_STORE_NOTE, STARS_QUOTA_OFF_NOTE, STARS_QUOTA_WAITING_NOTE, STARS_ALL_STARS_NOTE,
   STARS_COL_STARS_ADDED, STARS_COL_ROUNDS_PEAK, STARS_COL_STARS,
   STARS_VIEW_LABELS, STARS_VIEW_DISABLED_LABELS, STARS_SORT_LABELS,
+  // ★ 第二十八轮：详情那三枚按钮的字面/句子/段名全在 domain（在这里手抄「译整篇」或那句 runNote，改一天就是一片假绿）。
+  MANUAL_ACTION_LABELS, MANUAL_ACTION_HINTS, MANUAL_GATE_NOTES, MANUAL_RUN_NOTE,
+  manualSectionTitle, manualExpandedMeta,
 } from '../lib/domain.js';
 import { netView, translatorView, githubView, publicPrefs } from '../lib/api.js';
 import { DESC_ZH_ROWS, DESC_ZH_LABEL, DESC_ZH_NOTE } from '../lib/desc-zh.js';
@@ -2107,6 +2110,150 @@ check('client-55 同一条失败句在详情里只念一次：摘要段那块跟
   const td = mk(diff);
   assert.equal(count(td, '1,842 字'), 1, '摘要自己的回执被去重去掉了');
   assert.ok(td.includes('翻译接口回得太长'), '原因不同却撤掉摘要那句 = 把一次失败说成没有失败');
+});
+
+/* ---------------- 第二十八轮：详情弹框那三枚手动按钮（§8.11 第 ⑥ 步，浏览器半边） ---------------- */
+
+/** 载荷里那一整格 `manual` 的夹具：形状 = `createFullReadmeService().payload()` 的返回，逐键对齐。 */
+const manFixture = (over = {}) => ({
+  section: 'self',
+  runNote: MANUAL_RUN_NOTE,
+  actions: [
+    { action: 'expand', kind: '', label: MANUAL_ACTION_LABELS.expand, can: true, gate: '', note: MANUAL_ACTION_HINTS.expand },
+    { action: 'translate', kind: 'readmeFullZh', label: MANUAL_ACTION_LABELS.translate, can: true, gate: '', note: MANUAL_ACTION_HINTS.translate },
+    { action: 'summarize', kind: 'readmeFullSum', label: MANUAL_ACTION_LABELS.summarize, can: false, gate: 'no_sum_capability', note: MANUAL_GATE_NOTES.no_sum_capability },
+  ],
+  sections: [],
+  ...over,
+});
+/** 客户端那一屏的临时态：形状 = client.js 的 `IDLE_MANUAL`。 */
+const manualProp = (over = {}) => ({ running: '', receipts: null, man: null, err: '', ...over });
+
+check('client-64 三枚按钮常驻在宿主指的那一段：disabled 只认载荷的 can 与「正在跑」，title 念的就是载荷那句 note', () => {
+  const { DetailModal } = loadClient().exports.__test.components;
+  const v = detailFixture({ readmeSource: 'en_default', readmePath: 'README.md', readmeExcerpt: 'Vite is a frontend tool.', zhCjk: 0 });
+  const seen = [];
+  // `man` 是**详情载荷**那一份（`v.manual`）；`manual.man` 是**回执**带回来的那一份，两份都在时以后者为准
+  const mk = ({ manual = manualProp(), man = null } = {}) => render(DetailModal, {
+    detail: { repo: v.repo, loading: false, view: { ...v, manual: man }, err: '' },
+    manual, onManual: (a) => seen.push(a), onClose() {}, onRefresh() {},
+  });
+  const actsOf = (tree) => {
+    const acts = findByClass(tree, 'gt-acts');
+    assert.equal(acts.length, 1, `按钮排只许一排（摆了 ${acts.length} 排：段名行与别处各一份）`);
+    return kidsOf(acts[0], 'button');
+  };
+
+  const btns = actsOf(mk({ man: manFixture() }));
+  assert.deepEqual(btns.map((b) => text(b)),
+    [MANUAL_ACTION_LABELS.expand, MANUAL_ACTION_LABELS.translate, MANUAL_ACTION_LABELS.summarize],
+    '字面与顺序吃 `actions`：这里不另排一份名单，也不自造缺位符');
+  assert.deepEqual(btns.map((b) => b.props.disabled), [false, false, true],
+    '只有 can:false 那一枚按不动（用户裁定「不该点时置灰并说明」）');
+  assert.deepEqual(btns.map((b) => b.props.title),
+    [MANUAL_ACTION_HINTS.expand, MANUAL_ACTION_HINTS.translate, MANUAL_GATE_NOTES.no_sum_capability],
+    'title 念载荷那句：能点时说要做什么，置灰时说为什么按不动 —— 两处都不是界面现写');
+  btns.forEach((b) => b.props.onClick());
+  assert.deepEqual(seen, ['expand', 'translate', 'summarize'], '按下只把 action 交回宿主：这一趟派哪一路、发几发都在那边定');
+
+  // 跑着的时候三枚一起按住：同一趟要花的额度只有一份，连点两枚就是花两份
+  assert.deepEqual(actsOf(mk({ manual: manualProp({ running: 'translate' }), man: manFixture() })).map((b) => b.props.disabled),
+    [true, true, true], 'running 只挡正在跑那一枚的话，用户能在同一屏上把三份额度同时点出去');
+
+  // 两处都没有 ⇒ 一枚都不摆（这个宿主没装配这一路，界面不许猜一份名单出来）
+  const noMan = render(DetailModal, {
+    detail: { repo: v.repo, loading: false, view: v, err: '' },
+    manual: manualProp(), onManual() {}, onClose() {}, onRefresh() {},
+  });
+  assert.equal(findByClass(noMan, 'gt-acts').length, 0, '载荷没给 manual 就自己排三枚 = 客户端在拼第二份真相');
+  // 回执那一份优先（跑完一趟，置灰口径与库里那一行都可能跟着变）
+  const after = manFixture({
+    actions: manFixture().actions.map((a) => ({ ...a, can: false, gate: 'not_ready', note: MANUAL_GATE_NOTES.not_ready })),
+  });
+  assert.deepEqual(actsOf(mk({ manual: manualProp({ man: after }), man: manFixture() })).map((b) => b.props.title),
+    [MANUAL_GATE_NOTES.not_ready, MANUAL_GATE_NOTES.not_ready, MANUAL_GATE_NOTES.not_ready],
+    '还在念详情载荷那一份 = 点开那一刻的快照，档位换了屏上不知道');
+});
+
+check('client-65 那两段只从 manual.sections 摆：段名连落款原样念，正文走 pre-wrap 那一格，库里没有那一行就整段不摆', () => {
+  const { DetailModal } = loadClient().exports.__test.components;
+  const v = detailFixture({ readmeSource: 'en_default', readmePath: 'README.md', readmeExcerpt: 'Vite is a frontend tool.', zhCjk: 0 });
+  const mk = (sections) => render(DetailModal, {
+    detail: { repo: v.repo, loading: false, view: { ...v, manual: manFixture({ sections }) }, err: '' },
+    manual: manualProp(), onManual() {}, onClose() {}, onRefresh() {},
+  });
+  const labelZh = manualSectionTitle('readmeFullZh', engineZhLabel('keyless', ZH_AT));
+  const labelSum = manualSectionTitle('readmeFullSum', engineZhLabel('host_llm', ZH_AT));
+  const tree = mk([
+    { kind: 'readmeFullSum', label: labelSum, zh: '各块短述拼起来的那一篇摘要' },
+    { kind: 'readmeFullZh', label: labelZh, zh: '第一段译文\n\n第二段译文' },
+  ]);
+  const h2 = findByClass(tree, 'gt-modal-h2').map(text);
+  assert.ok(h2.includes(labelZh) && h2.includes(labelSum), '段名是宿主拼定的那整句（含「· 手动跑的」与落款）：客户端不许重拼也不许截');
+  assert.ok(h2.indexOf(labelSum) < h2.indexOf(labelZh), '顺序吃 sections：这里不排（排一遍就是第二个段序）');
+  // 正文落在 `.gt-modal-readme` 那一格：译文按段拼回来，只有它带 pre-wrap
+  const bodies = findByClass(tree, 'gt-modal-readme').map(text);
+  assert.ok(bodies.some((t) => t.includes('第一段译文') && t.includes('第二段译文')), '两段译文都被拼成一个文本节点 = 段落没了分隔');
+  const css = clientSrc();
+  assert.match(css, /\.gt-modal-readme\{[^}]*white-space:pre-wrap/, '译文与整篇正文靠空行分段：那一格没 pre-wrap 就是把段落压成一行');
+
+  // 库里没有那两行 ⇒ 整段不摆（不是摆一块空壳，同「宿主没给的段不许自己补」那条律）
+  const empty = findByClass(mk([]), 'gt-modal-h2').map(text);
+  assert.equal(empty.some((t) => t.includes('手动跑的')), false, 'sections 空还摆段名 = 屏上多一段没有内容的标题');
+});
+
+check('client-66 展开只按 kind 覆盖那两块；那一趟说了什么按 notes 分组摆、在飞那句吃 runNote、请求本身坏了是另一格', () => {
+  const { DetailModal } = loadClient().exports.__test.components;
+  const v = detailFixture({ readmeSource: 'en_default', readmePath: 'README.md', readmeExcerpt: 'Vite 是…节选。', readmeChars: 12, zhCjk: 0 });
+  const mk = (manual) => render(DetailModal, {
+    detail: { repo: v.repo, loading: false, view: { ...v, manual: manFixture() }, err: '' },
+    manual, onManual() {}, onClose() {}, onRefresh() {},
+  });
+  const exp = { ok: true, action: 'expand', text: '整篇的正文一二三', meta: manualExpandedMeta(48549),
+    // ★ 两块**故意给反序**（宿主真给的是 [excerpt, num]）：客户端认的是 `kind`，不是位置。
+    //   按位置硬套的那一版在这份夹具上会把整篇塞进元数据的位子里 —— 同序两份就测不出差别。
+    blocks: [{ kind: 'num', text: manualExpandedMeta(48549) }, { kind: 'excerpt', text: '整篇的正文一二三' }], notes: [] };
+  const blocksIn = (node) => {
+    const acc = [];
+    const walk = (n) => {
+      if (!n || typeof n !== 'object') return;
+      if (Array.isArray(n)) { n.forEach(walk); return; }
+      const cls = String(n.props?.className || '').split(/\s+/);
+      if (cls.includes('gt-modal-readme')) acc.push('readme');
+      else if (cls.includes('gt-num')) acc.push('num');
+      (n.children || []).forEach(walk);
+    };
+    walk(node);
+    return acc;
+  };
+  const done = mk(manualProp({ receipts: { expand: exp } }));
+  assert.ok(findByClass(done, 'gt-modal-readme').map(text).some((t) => t.includes('整篇的正文一二三')), '展开没把节选换成整篇');
+  assert.equal(findByClass(done, 'gt-modal-readme').map(text).some((t) => t.includes('Vite 是…节选。')), false, '两块并存 = 按 kind 对齐没做成（客户端在追加而不是覆盖）');
+  assert.ok(findByClass(done, 'gt-num').map(text).some((t) => t.includes(manualExpandedMeta(48549))), '那句元数据也归宿主给（屏上「整篇 N 字」与展开后那句得是同一个数）');
+  const secNode = findByClass(done, 'gt-modal-sec').find((s) => findByClass(s, 'gt-acts').length === 1);
+  assert.ok(secNode, '按钮那一排没落在段表里的那一段上');
+  assert.deepEqual(blocksIn(secNode), ['readme', 'num'],
+    '两块的位置吃段表原序：`kind` 对齐是各归各位，按下标硬套就是把整篇正文塞进那句元数据的位子里');
+
+  // 失败的那一份不覆盖：屏上留着节选，说的话进那组回执
+  const bad = mk(manualProp({ receipts: { expand: { ok: false, action: 'expand', notes: ['这一趟没跑成：取正文那一发失败了'] } } }));
+  assert.ok(findByClass(bad, 'gt-modal-readme').map(text).some((t) => t.includes('Vite 是…节选。')), '展开失败还覆盖 = 屏上一块空白却说展好了');
+  assert.equal(findByClass(bad, 'gt-notice-err').length, 0, '跑完了但没成 ≠ 请求本身坏了：那一格摆的是连回执都没拿到');
+
+  // 回执那几组：组名吃按钮自己的 label，只有 notes 非空的那组才摆
+  const notes = mk(manualProp({ receipts: {
+    translate: { ok: true, action: 'translate', notes: ['这一趟出网：GitHub 1 发（裸发拿整篇）+ 免费接口 3 发'] },
+    summarize: { ok: true, action: 'summarize', notes: [] },
+  } }));
+  const groups = findByClass(notes, 'gt-modal-sec').map(text);
+  assert.ok(groups.some((t) => t.startsWith(MANUAL_ACTION_LABELS.translate) && t.includes('免费接口 3 发')), '那一趟说了什么没有分组摆出（组名 = 按钮 label）');
+  assert.equal(groups.some((t) => t.startsWith(MANUAL_ACTION_LABELS.summarize)), false, 'notes 空的那组也要摆 = 三组里两组是空壳');
+
+  // 在飞那句吃载荷的 runNote；请求本身坏了另摆一格
+  const busy = text(mk(manualProp({ running: 'translate' })));
+  assert.ok(busy.includes(MANUAL_RUN_NOTE), '跑着的时候屏上没有那句实话（关掉弹框会不会打断，界面不许自己编）');
+  const broken = text(mk(manualProp({ err: 'HTTP 500' })));
+  assert.ok(broken.includes('HTTP 500'), '连回执都没拿到时屏上得看得见那一句');
 });
 
 /* ---------------- 第二十三轮：明星仓库那一屏（§7.7 形状 B / §8.8 第 6 步） ---------------- */

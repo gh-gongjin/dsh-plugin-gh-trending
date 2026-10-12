@@ -22,6 +22,7 @@ import {
   splitReadmeSections, pickZhSection, descIsZh, readmeZhOnScreen,
   repoFacts, repoSections, readmeMeta, fetchRepoDetail, repoCacheRow, repoView,
   createRepoDetailService, applyZh,
+  fetchFullReadme, stripReadmeFull,
   searchRepoUrl, searchRepositories, createSearchFetcher,
 } from '../lib/services/repo.js';
 import { createRepoCacheStore } from '../lib/stores.js';
@@ -1506,9 +1507,10 @@ check('限额读数：没碰过 API 是 null，碰过之后跟着最近一发（
 /* ------------------------------------------------------------------ *
  * 第二十一轮：GitHub 令牌（只进请求头）与「上限跟着响应头」
  *
- * ★ 形状出处：`x-ratelimit-limit: 5000` 那一发是**合成**的 —— 本机没有 GitHub 账号也没有令牌，
- *   2026-10-07 实测抓下来的夹具每一发都写着 60（tmp/probe-repo.txt）。所以这几条钉的是
- *   「读 GitHub 回的那一格、而不是抄死 60」这条判据的形状，不是"GitHub 真的这么答"。
+ * ★ 形状出处：`x-ratelimit-limit: 5000` 那一发是**合成**的 —— 直到 2026-10-10 本机**一次都没收到过**带 `5000` 的真回包
+ *   （10-07 抓下来的夹具每一发都写着 60，`tmp/probe-repo.txt`；★ 10-10 盘上对账确认库里 `ghToken` 那一格**非空**，
+ *   但那只是"发出时带上了 Bearer"，不等于 GitHub 回了 5,000 ⇒ 那一档仍零真样本，界面上那一屏是唯一读法）。
+ *   所以这几条钉的是「读 GitHub 回的那一格、而不是抄死 60」这条判据的形状，不是"GitHub 真的这么答"。
  *   5000 这个数从 domain 的 `REPO_RATE_AUTH` 来（官方文档口径），用例里不出现第二个字面量。
  * ------------------------------------------------------------------ */
 
@@ -1864,6 +1866,103 @@ check('夹具对账（search）：真抓 200 + 限额头实测 + 裁剪口径登
     assert.ok(Object.keys(it).every((k) => sDoc.response.readKeys.includes(k)), '裁过的行里出现被读的四键之外的字段 ⇒ 裁剪口径没生效');
   }
   assert.deepEqual(sDoc.response.topLevelKeys, ['total_count', 'incomplete_results', 'items'], '顶层形状变了就先改夹具口径，别改代码去迁就');
+});
+
+/* ------------------------------------------------------------------ *
+ * 7b. 展开整篇那一发（第二十八轮 §8.11）：裸取、零入库、令牌仍只在请求头
+ * ------------------------------------------------------------------ */
+check('裸取：库里带着验证器也一个字都不喂 ⇒ 这一发拿回 200 的整篇正文（喂了就大概率换 304，而 304 正文 0 字节 = 那一屏展不开）', async () => {
+  // `antTable()` 是第二十七轮那张**带 etag** 的表（README 那一路挂着 ETAG_RD）—— 拿它当靶子，
+  // 代码哪天把库里的钥匙顺手喂进这一发，假 fetch 当场回 304、`ok` 就红了。
+  const table = antTable();
+  const r = await fetchFullReadme({ repo: ANT, fetchFn: table, now: NOW });
+  assert.equal(r.ok, true, `整篇没拿到：${r.errKey} ${r.errText}`);
+  assert.equal(table.seen.length, 1, '展开只问 README 那一发，不该顺手把元数据也问一遍（那是第二次扣配额）');
+  assert.deepEqual(inmOf(table.seen), [''], '裸取的含义就是请求里**没有** If-None-Match');
+  assert.equal(new URL(table.seen[0].url).pathname, `/repos/${ANT}/readme`, '展的是 GitHub 自己认的那一篇默认文档');
+  assert.equal(table.seen[0].headers.accept, 'application/vnd.github.raw', '整篇走 raw：拿 JSON 那份 base64 正文又是一条解码路径');
+  // 两格长度的定义钉死：`chars` = 去标记后（分块喂的是它），`rawChars` = 原文（屏上「整篇 48,549 字」念的是它）。
+  const raw = src(`/repos/${ANT}/readme`).text;
+  assert.equal(r.rawChars, raw.length, 'rawChars 是**原文**长度：拿它当 chars 就是把去标记的账混进屏上那句字数');
+  assert.equal(r.chars, r.text.length);
+  assert.equal(r.text, stripReadmeFull(raw), 'text 必须是**去标记后仍保段落**的那一份');
+  assert.equal(r.at, NOW(), '落款时刻由注入的 now 给，界面那句「取回于…」才有统一的出处');
+});
+
+check('展开的是屏上那一篇：path 空或 README 走 /readme，其余逐段 encode 走 /contents（换一篇就不是展开）', async () => {
+  const forPath = async (path) => {
+    const table = makeApiFetch([
+      { path: `/repos/${WEEKLY}/readme`, text: '# weekly\n\n整篇的默认那一篇。' },
+      { path: `/repos/${WEEKLY}/contents/docs/i18n/README%E4%B8%AD%E6%96%87.md`, text: '# 中文篇\n\n这一篇才是屏上展开的。' },
+    ]);
+    const r = await fetchFullReadme({ repo: WEEKLY, path, fetchFn: table, now: NOW });
+    assert.equal(r.ok, true, `path=${JSON.stringify(path)}：${r.errKey} ${r.errText}`);
+    return new URL(table.seen[0].url).pathname;
+  };
+  assert.equal(await forPath(''), `/repos/${WEEKLY}/readme`);
+  assert.equal(await forPath('README'), `/repos/${WEEKLY}/readme`, '默认篇由 GitHub 自己认，不猜文件名大小写');
+  assert.equal(await forPath('   '), `/repos/${WEEKLY}/readme`, '库里那格躺着空白串也不能因此改问 contents');
+  assert.equal(await forPath('docs/i18n/README中文.md'), `/repos/${WEEKLY}/contents/docs/i18n/README%E4%B8%AD%E6%96%87.md`,
+    '中文文件名不 encode 就会打到另一个路径上（第十五轮那条 zh_file 的活靶子）');
+});
+
+check('零入库、不进 60 秒窗口：这一发跑完库里那行一个字没变，下一次点开详情照旧自己问它的四发', async () => {
+  const s = await mkService();
+  const before = s.facility.rowCount('gh_trending', 'repo');
+  const one = await s.svc.fullReadme(ANT);
+  assert.equal(one.ok, true);
+  assert.equal(s.facility.rowCount('gh_trending', 'repo'), before, '整篇入库的账在 spec §8.11 第 ⑩ 条：行均 17KB→50KB，而开域要整读');
+  assert.equal((await s.store.list()).length, before, '门面也没顺手把整篇塞成一行失败留档');
+  // 展开不是"看过一次详情"：紧接的 load 仍按自己的口径发（那 1 发 fullReadme 不算进 60 秒窗口，也不喂验证器）
+  const f2 = fullTable();
+  const s2 = await mkService({ table: f2 });
+  await s2.svc.fullReadme(ANT);
+  assert.equal(f2.seen.length, 1);
+  await s2.svc.load(ANT);
+  assert.ok(f2.seen.length >= 4, `展开那一发把窗口顶掉了 ⇒ load 只发 ${f2.seen.length - 1} 发`);
+});
+
+check('这一发的三种失败各说各的话，且都不写字：404 走 not_found、空正文走 parse、坏名字连网都不碰', async () => {
+  const nf = makeApiFetch([
+    { path: `/repos/${WEEKLY}/readme`, status: 404, text: '{"message":"Not Found"}', headers: rateHead(59) },
+  ]);
+  const r1 = await fetchFullReadme({ repo: WEEKLY, fetchFn: nf, now: NOW });
+  assert.equal(r1.ok, false);
+  assert.equal(r1.errKey, 'not_found', '404 要说"没有这一篇"，不是笼统的"请求失败"');
+  assert.equal(r1.rate.left, 59, '限额读数得跟着这一发走：屏上那句"还剩多少次"不能因为展开就冻在出厂档');
+  // 只有标记的正文（链接定义行 + HTML 注释）⇒ 去标记后一个字都不剩 ⇒ parse，不许回一句空段落冒充整篇
+  const blank = makeApiFetch([{ path: `/repos/${WEEKLY}/readme`, text: '[ci-id]: https://img.shields.io/x.svg\n\n<!-- 只有注释 -->' }]);
+  const r2 = await fetchFullReadme({ repo: WEEKLY, fetchFn: blank, now: NOW });
+  assert.equal(r2.ok, false);
+  assert.equal(r2.errKey, 'parse');
+  assert.equal(r2.text, undefined, '判失败就不该把正文留在回执里（客户端念的是 notes，不是自己挑字段）');
+  // 坏名字在出网前就挡：假 fetch 一条路径都没登记，跑了就说明真发了
+  const none = makeApiFetch([]);
+  const r3 = await fetchFullReadme({ repo: 'only-owner', fetchFn: none, now: NOW });
+  assert.equal(r3.ok, false);
+  assert.equal(r3.errKey, 'bad_key');
+  assert.equal(none.seen.length, 0, '名字坏了还出网 = 白扣一次配额');
+});
+
+check('hc-21 的效果侧扩到这一发：默认零凭据不带 authorization；填了令牌只进请求头，URL 逐字节不变', async () => {
+  const anon = await fetchFullReadme({ repo: ANT, fetchFn: antTable(), now: NOW });
+  assert.equal(anon.ok, true);
+  const withToken = makeApiFetch([
+    src(`/repos/${ANT}/readme`),
+  ]);
+  await fetchFullReadme({ repo: ANT, fetchFn: withToken, now: NOW, ghToken: 'ghp_abcdefghijklmnopqrstuvwxyz012345' });
+  const sent = withToken.seen[0];
+  assert.equal(sent.headers.authorization, 'Bearer ghp_abcdefghijklmnopqrstuvwxyz012345');
+  assert.equal(Object.keys(withToken.seen[0].headers).includes('if-none-match'), false, '带令牌也不带验证器：那两格互不相干');
+  assert.equal(sent.url.includes('ghp_'), false, '令牌永远不进 URL —— 进了就被代理与日志抄走');
+  assert.equal(new URL(sent.url).host, new URL(GITHUB_API_BASE).host);
+  // 门面那一颗闭包：装配层（lib/api.js）从头到尾不认识 ghToken 这个键名
+  const f = makeApiFetch([src(`/repos/${ANT}/readme`)]);
+  const svc = createRepoDetailService({ fetchFn: f, now: NOW, getGhToken: () => 'ghp_from_prefs_0000000000000000000000' });
+  const viaFacade = await svc.fullReadme(ANT, { path: '' });
+  assert.equal(viaFacade.ok, true);
+  assert.equal(f.seen[0].headers.authorization, 'Bearer ghp_from_prefs_0000000000000000000000');
+  assert.equal(f.seen[0].url.includes('ghp_from_prefs'), false);
 });
 
 /* ------------------------------------------------------------------ *
