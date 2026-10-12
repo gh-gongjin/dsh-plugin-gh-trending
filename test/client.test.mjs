@@ -74,6 +74,8 @@ const PAYLOAD = {
  *  · snap / tab —— 顶掉 GhTrendingPage 的 useState 初值，用来逐页签测路由
  *  · states —— 按"本次渲染里第几个 useState"顶初值（★ 只配单组件渲染用，见上面 stateSets 那条）
  *  · stylePresent —— 假装 document 里已有同 id 的 style（测 reload 不叠两份）
+ *  · storage / storageThrows —— 那份 `localStorage` 的底座（对象传引用，可跨两次 loadClient 复用 = 同一个浏览器重挂）；
+ *    throws 那一份演存储整个不可用。读回来的那三个 id 只认名单，见 client-67~69（第二十九轮）。
  */
 function loadClient(payload = PAYLOAD, opts = {}) {
   const code = fs.readFileSync(new URL('../client.js', import.meta.url), 'utf8');
@@ -86,6 +88,17 @@ function loadClient(payload = PAYLOAD, opts = {}) {
   //   两者都只在**单组件渲染**里用（顶的是整页的第 N 个 useState，跨组件没有意义）。
   const stateSets = [];
   let setCursor = 0;
+  // ★ 第二十九轮：选择态落 `localStorage`（宿主主区那条 `main` keyed slot 只画命中的那一条 ⇒ 切走面板整棵树重建）。
+  //   `opts.storage` 传同一份对象跨两次 `loadClient` = 同一个浏览器里重挂；`opts.storageThrows` 演它整个不可用
+  //   （隐私模式 / 被禁：真浏览器里访问 `localStorage` 会抛，不是返回 null）。
+  const store = opts.storage ?? {};
+  const storageWrites = [];
+  const fakeStorage = opts.storageThrows
+    ? { getItem() { throw new Error('SecurityError: storage disabled'); }, setItem() { throw new Error('QuotaExceededError'); } }
+    : {
+      getItem: (k) => (Object.prototype.hasOwnProperty.call(store, k) ? store[k] : null),
+      setItem: (k, v) => { storageWrites.push(k); store[k] = String(v); },
+    };
   const fakeDoc = {
     getElementById: (id) => (opts.stylePresent ? { id } : null),
     createElement: (tag) => {
@@ -132,6 +145,7 @@ function loadClient(payload = PAYLOAD, opts = {}) {
       },
     },
     document: fakeDoc,
+    localStorage: fakeStorage,
     fetch: opts.fetch ?? (async () => { throw new Error('沙箱不发真请求'); }),
     setTimeout, clearTimeout, setInterval, clearInterval,
     console, TextDecoder: global.TextDecoder, URL,
@@ -143,7 +157,7 @@ function loadClient(payload = PAYLOAD, opts = {}) {
   const exports = loaded.exports;
   assert.ok(exports && typeof exports === 'object' && typeof exports.apply === 'function',
     'factory 必须 return module.exports（返回 module 外层拿不到 apply ⇒ 真机 invalid plugin）');
-  return { exports, sandbox, styleOps, effects, docListeners, stateSets };
+  return { exports, sandbox, styleOps, effects, docListeners, stateSets, store, storageWrites };
 }
 
 const AT = 1790700000000;
@@ -2524,10 +2538,16 @@ check('client-62 中文列沿用榜面那套混合视图；故障 / 没取回 / 
   assert.equal(text(onCell), '那一档补出来的中文', '那一档的行命中 ⇒ 中文上屏：hits 的键表由宿主决定，客户端不判"这行属于哪一屏"');
   assert.ok(onCell.children[0].props.title.includes(`原文：${hitRow.desc}`), '悬停仍看得见 GitHub 那句原文');
   assert.ok(onCell.children[0].props.title.includes(DESC_ZH_LIVE_NOTE), '落款念的是 domain 那一句现译说明（两屏共用同一句，客户端不另写一套）');
-  // ③″ 同一张 trans 表、同一批行，开关拨回关 ⇒ 那句中文立刻下屏（参与集合里压根没有它）
+  // ③″ ★ 第二十九轮改判（原来这一条是「开关关着、view 硬塞成 allStars ⇒ 宿主不给 hits ⇒ 屏上退回原文」）：
+  //   那个组合真 UI 里点不到（那一枚恒 disabled），而选择态落盘之后它成了每次重挂都可能遇到的输入 ⇒ 读回时名单校验
+  //   当场把它回落第一档。这里改验那一件事；「客户端不许自己拿 transRows 补出中文」那条律仍由 ②③③′ 三处钉着。
   const offTree = starsWith('allStars', snapFixture({}, { prefs: { allStarsEnabled: false }, search: searchBatchOf([hitRow]), transRows: siteRows })).tree;
-  assert.equal(text(starsCells(offTree, 0)[2]), 'A plain english line',
-    '★ 关掉那一档 ⇒ 宿主不再给它的 hits，屏上退回原文（客户端不许自己拿 transRows 补出中文，那是第二份真相）');
+  const offRow = starsCells(offTree, 0);
+  assert.equal(text(offRow[1]), DESC_ZH_ROWS[0][0], '落盘那份「allStars」被名单校验挡下 ⇒ 屏上是「全部」那一档的第一行，不是那一档的行');
+  assert.equal(offRow.length, 7, '列数跟着回落（六列不成立 = 真的没停在那一档，不是只换了个文案）');
+  const offSeg = kidsOf(findByClass(offTree, 'gt-seg')[0], 'button');
+  assert.ok(hasCls(offSeg[0], 'on'), '分段器亮着的是名单第一档');
+  assert.equal(offSeg[4].props.disabled, true, '那一枚照旧灰着摆着（藏掉就等于说这一档不存在）');
   // ④ 故障：本轮没取回 ⇒ 一句 err，上一批的行照旧在屏上（§1 那条「上一批照常显示并挂一句故障」）
   const bad = snapFixture({}, { prefs: { allStarsEnabled: true },
     search: searchBatchOf([searchRowOf(1, 'freecodecamp/freecodecamp')], { ok: false, error: '限额用尽（403，重置于 10-09 11:20）' }) });
@@ -2600,6 +2620,97 @@ check('client-63 那一档的开关：出去的是严格布尔，开启绝不跳
   link.props.onClick({ button: 0, ctrlKey: false, metaKey: false, shiftKey: false, altKey: false });
   assert.deepEqual(clicked, ['addyosmani/agent-skills'], '第一行的仓库名点开的是那一行自己的主键（小写归一那份）');
   assert.equal(link.props.className, 'gt-repo');
+});
+
+/* ---------------- 第二十九轮：面板选中态落盘（切签与切宿主面板都不丢） ---------------- */
+
+check('client-67 落盘读回只认名单：在册且能点的照旧选中，那一枚灰着或名单里没有 ⇒ 回落第一档（与「关掉那一档送回第一档」同一条规则）', () => {
+  const { pickOption } = loadClient().exports.__test;
+  const snap = snapFixture();
+  const views = snap.stars.views;
+  // 纯函数那一层：四种输入各走哪条，回落值只吃名单第一档与那个出厂值，客户端不自造档位名
+  assert.equal(pickOption(views, 'rising', 'all'), 'rising', '在册且能点 ⇒ 存的就是它');
+  assert.equal(pickOption(views, 'allStars', 'all'), 'all', '未开启时那一枚是 disabled ⇒ 落盘里存着它也回落第一档');
+  assert.equal(pickOption(views, 'no-such-view', 'all'), 'all', '名单里没有（改版后旧 id）⇒ 回落，不拿它去筛行筛出一张空表');
+  assert.equal(pickOption([], undefined, 'all'), 'all', '首帧还没有名单 ⇒ 吃出厂值，不是空字符串');
+  // 组件那一层：挑一个真带行的归属档当输入（归属由宿主判，用例不自己推 group）
+  const target = (snap.stars.rows.find((r) => r.group) || {}).group;
+  assert.ok(target && target !== 'allStars', '前提：夹具那份榜史里得有一行带归属，否则"选中"与"回落"在屏上分不开');
+  const seg = kidsOf(findByClass(starsWith(target, snap).tree, 'gt-seg')[0], 'button');
+  assert.equal(seg.findIndex((b) => hasCls(b, 'on')), views.findIndex((o) => o.id === target),
+    '高亮落在存的那一枚上（不是永远亮第一枚）');
+  // 存的是 disabled 那一枚 ⇒ 屏上真是第一档的行：列数（七列）与第一枚高亮一起证它回落了
+  const back = starsWith('allStars', snap).tree;
+  const backTbl = findAllType(back, 'table')[0];
+  assert.equal(kidsOf(kidsOf(backTbl, 'colgroup')[0], 'col').length, 7,
+    '回落到「全部」那一档 ⇒ 列集跟着回到七列（还停在六列就是没真回落，只是嘴上说回落）');
+});
+
+check('client-68 整页重挂不丢选择：切签与切宿主面板都吃这一份落盘，且落盘的只有那三个 id', () => {
+  const UI = loadClient().exports.__test.UI_KEY;
+  // ⓪ 键名只有一处出处：跟着载荷 `panelId` 走 —— 宿主那套存储是整个浏览器共享的，键名得带插件身份
+  assert.equal(UI, `${PAYLOAD.panelId}.ui.v1`, '键名的出处就是 panelId 那一格，不许在别处再写一份字面量');
+  assert.equal(loadClient({ ...PAYLOAD, panelId: 'other-panel' }).exports.__test.UI_KEY, 'other-panel.ui.v1',
+    '换 panelId 落盘点不跟着动 = 静默换了一个地方存，用例照样全绿而真机串台');
+  const OVERVIEW = ['三榜状态', '日榜', '周榜', '月榜', '跨榜同现'];
+  const titles = (tree) => findByClass(tree, 'gt-card-t').map(text);
+  const store = {};
+  const snap = snapFixture();
+  const page = (opts) => render(loadClient(PAYLOAD, opts).exports.__test.components.GhTrendingPage, {});
+  const tabBtns = (tree) => kidsOf(findByClass(tree, 'gt-tabs')[0], 'button');
+  const tabs = loadClient().exports.__test.TABS;
+
+  // ① 出厂：没存过 ⇒ 总览（这一条不许改判，它钉住"回落"的默认值）
+  assert.deepEqual(titles(page({ storage: store, snap })), OVERVIEW);
+  // ② 点明星签 ⇒ 状态动 + 落盘动（同一处写，不留第二份真相）
+  const a = loadClient(PAYLOAD, { storage: store, snap });
+  const treeA = render(a.exports.__test.components.GhTrendingPage, {});
+  tabBtns(treeA)[tabs.findIndex((t) => t.id === 'stars')].props.onClick();
+  assert.equal(JSON.parse(store[UI]).tab, 'stars', '切页签没落盘 = 切走面板回来又是总览（用户报的那一件事）');
+  assert.equal(a.stateSets.some((s) => s.next === 'stars'), true, '状态那一侧也要动，只落盘不切屏是另一回事');
+  // ③ 整棵树重建（宿主 `main` keyed slot 只画命中的那一条）：同一个 store 的第二个实例直接开在明星那一页
+  const b = loadClient(PAYLOAD, { storage: store, snap });
+  const treeB = render(b.exports.__test.components.GhTrendingPage, {});
+  assert.deepEqual(titles(treeB), ['明星仓库'], '切回来还在明星那一页，而不是总览');
+  assert.equal(findByClass(treeB, 'gt-tabs').length, 1, '页签条常驻那条律不受落盘影响');
+  assert.equal(tabBtns(treeB)[tabs.findIndex((t) => t.id === 'stars')] && hasCls(tabBtns(treeB)[tabs.findIndex((t) => t.id === 'stars')], 'on'), true,
+    '页签条上亮着的也是那一枚（读盘的那一份与屏上必须同一条）');
+  // ④ 那一屏的两个分段器同样吃这一份：点视图档 + 点排序 ⇒ 第三个实例还在同一处
+  const segs = findByClass(treeB, 'gt-seg');
+  kidsOf(segs[0], 'button')[1].props.onClick();
+  kidsOf(segs[1], 'button')[1].props.onClick();
+  const saved = JSON.parse(store[UI]);
+  assert.equal(saved.starsView, snap.stars.views[1].id, '视图档落的是载荷那个 id（不是 label，客户端不重排名单）');
+  assert.equal(saved.starsSort, snap.stars.sorts[1].id, '排序档同上');
+  const c = loadClient(PAYLOAD, { storage: store, snap });
+  const treeC = render(c.exports.__test.components.GhTrendingPage, {});
+  const segC = findByClass(treeC, 'gt-seg');
+  assert.equal(kidsOf(segC[0], 'button').findIndex((x) => hasCls(x, 'on')), 1, '重挂回来视图档还是那一枚');
+  assert.equal(kidsOf(segC[1], 'button').findIndex((x) => hasCls(x, 'on')), 1, '排序档也是');
+  // ⑤ 落盘只装那三个 id：半截草稿与密钥一个字都不许在这里（`PREF_SECRET_KEYS` 由 domain 给，用例不手抄名单）
+  assert.deepEqual(Object.keys(saved).sort(), ['starsSort', 'starsView', 'tab']);
+  const all = PREF_SECRET_KEYS.concat(['proxyUrl', 'language', 'intervalMin', 'topN', 'keepEvents']);
+  assert.equal(all.some((k) => store[UI].includes(k)), false, '存储里出现任何偏好键名 = 把用户设置当成界面残影');
+});
+
+check('client-69 存储坏了不带走界面：读不到当没存过，写不进照旧在内存里用，坏值一律回落', () => {
+  const UI = loadClient().exports.__test.UI_KEY;
+  const OVERVIEW = ['三榜状态', '日榜', '周榜', '月榜', '跨榜同现'];
+  const titles = (tree) => findByClass(tree, 'gt-card-t').map(text);
+  const snap = snapFixture();
+  const page = (opts) => render(loadClient(PAYLOAD, opts).exports.__test.components.GhTrendingPage, {});
+  // ① 整个存储不可用（隐私模式 / 被禁：真浏览器里访问 localStorage 是**抛**，不是返回 null）
+  const t = loadClient(PAYLOAD, { storageThrows: true, snap });
+  const tree = page({ storageThrows: true, snap });
+  assert.deepEqual(titles(tree), OVERVIEW, '读不了就落回出厂那一页，界面照常能用');
+  kidsOf(findByClass(tree, 'gt-tabs')[0], 'button')[1].props.onClick();
+  assert.equal(t.storageWrites.length, 0, '写失败不炸屏，也不假装写成了');
+  // ② 值被写坏：非 JSON / 数组 / 数字 / 字符串 / null —— 一律当没存过，不许把整页带走
+  for (const bad of ['{', '[]', '7', 'null', '"stars"', '{"tab":{}}']) {
+    const s = { [UI]: bad };
+    const tree2 = page({ storage: s, snap });
+    assert.deepEqual(titles(tree2), OVERVIEW, `坏值 ${bad} 该回落总览（认不出就当没存过，不是拿它当 id）`);
+  }
 });
 
 await runAll('client');

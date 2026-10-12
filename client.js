@@ -465,6 +465,42 @@ window.__ModuleLoader__.load({
       }, []);
     }
 
+    /**
+     * 面板选中态的落盘点（第二十九轮）。立论的盘上证据：宿主主区那条 `main` keyed slot **只渲染 entryKey 命中的那一条**
+     * （安装包内 `dsh-client-ui-layout/lib/client.js:118` 拿 `activePanelId` 当 entryKey，
+     * `dsh-client-ui-renderer/lib/client.js:1153-1156` 的 keyed 分支 `find()` 到谁就只画谁）
+     * ⇒ 切走面板 = 整棵组件树重建，光挂在 `useState` 上的选择态一律回出厂。宿主自己的右侧栏靠声明
+     * `keepMounted` 才保活（`dsh-client-ui-sidebar-right/lib/client.js:5522` 那道 `seat === 'sidebar.right.pane.tab'` 的闸），
+     * 本插件不在那个席位上，所以自己把这三个 id 落盘。
+     * ★ 只存 id：`tab` / `starsView` / `starsSort`。设置页草稿（可能躺着半截密钥）与详情弹框那份（一落就要在回来时自动重开、白发一发）都不落。
+     */
+    const UI_KEY = `${PANEL_ID}.ui.v1`;
+    /** 读不挑环境：没有 `localStorage`（沙箱）或它抛错（隐私模式 / 禁用存储）都当「没存过」，界面退回出厂态照旧能用。 */
+    function readUi() {
+      try {
+        if (typeof localStorage === 'undefined') return {};
+        const raw = JSON.parse(localStorage.getItem(UI_KEY) || '{}');
+        return raw && typeof raw === 'object' ? raw : {};
+      } catch { return {}; }
+    }
+    /** 写失败不动屏上状态 —— 宿主那句「存储失败时，当前布局仍可在内存中使用」是同一条律。 */
+    function writeUi(patch) {
+      try {
+        if (typeof localStorage === 'undefined') return;
+        localStorage.setItem(UI_KEY, JSON.stringify({ ...readUi(), ...patch }));
+      } catch { /* 存不下就当没这回事，屏上这一份照旧 */ }
+    }
+    /**
+     * 落盘读回的 id 只认名单：不在名单、或那一枚正灰着 ⇒ 回落第一档。
+     * ★ 这就是「关掉那一档把人送回名单第一档」那一条规则（§0 第二十三轮 ⑧），这里只是把它写成一处、两头吃 ——
+     *   客户端不判档、不自造缺位符：回落值与名单一律来自载荷那一份 `views` / `sorts`。
+     */
+    function pickOption(list, saved, fallbackId) {
+      const arr = Array.isArray(list) ? list : [];
+      const hit = arr.find((o) => o && o.id === saved);
+      return hit && hit.disabled !== true ? hit.id : (arr[0]?.id ?? fallbackId);
+    }
+
     // ------------------------------------------------------------
     // 3) 各段
     // ------------------------------------------------------------
@@ -631,8 +667,14 @@ window.__ModuleLoader__.load({
       const sorts = s?.sorts || [];
       const missing = s?.missingCell || '';
       const enabled = snap?.prefs?.allStarsEnabled === true;
-      const [view, setView] = useState(views[0]?.id || 'all');
-      const [sort, setSort] = useState(sorts[0]?.id || 'stars');
+      const [rawView, setRawView] = useState(readUi().starsView ?? '');
+      const [rawSort, setRawSort] = useState(readUi().starsSort ?? '');
+      // ★ 生效档在渲染期现推（不是挂载时一次定）：首帧可能还没有载荷名单，那一份存着的 id 要等名单到位才认得出来。
+      const view = pickOption(views, rawView, 'all');
+      const sort = pickOption(sorts, rawSort, 'stars');
+      // 点一下 = 同时落盘（切签、切宿主面板、刷新都吃这一份），回落那一趟也落 —— 否则下次进来又把「未开启」那一档认回来
+      function chooseView(id) { setRawView(id); writeUi({ starsView: id }); }
+      function chooseSort(id) { setRawSort(id); writeUi({ starsSort: id }); }
       const zh = snap?.descZh || { hits: {}, heads: {}, liveNote: '' };
       const hitOf = (repo) => zh.hits?.[repo] || null;
 
@@ -641,7 +683,7 @@ window.__ModuleLoader__.load({
         onSave({ allStarsEnabled: next });
         // ★ 开启 ≠ 跳档（§0 本轮 ⑧：改的是一个数据源的开关，不是切屏，自动跳走会让人以为点了个视图按钮）。
         //   反过来"关掉"时那一枚已经 disabled，人还停在那一档就没有出口 ⇒ 只有这一趟把视图送回名单第一档（行仍在库里，关掉不删）。
-        if (!next && view === 'allStars') setView(views[0]?.id || 'all');
+        if (!next && view === 'allStars') chooseView(views[0]?.id || 'all');
       }
 
       if (!s) {
@@ -676,7 +718,7 @@ window.__ModuleLoader__.load({
           views.length
             ? h('span', { className: 'gt-seg' }, views.map((o) => h('button', {
                 key: o.id, className: view === o.id ? 'on' : '', disabled: o.disabled === true,
-                onClick: () => setView(o.id),
+                onClick: () => chooseView(o.id),
               }, o.label)))
             : null,
           h('button', { className: 'gt-btn', disabled: saving === true, onClick: toggleAllStars },
@@ -686,7 +728,7 @@ window.__ModuleLoader__.load({
             isAll || !sorts.length
               ? null
               : h('span', { className: 'gt-seg' }, sorts.map((o) => h('button', {
-                  key: o.id, className: sort === o.id ? 'on' : '', onClick: () => setSort(o.id),
+                  key: o.id, className: sort === o.id ? 'on' : '', onClick: () => chooseSort(o.id),
                 }, o.label))),
             countLine ? h('span', { className: 'gt-card-n' }, countLine) : null),
           notices.length ? notices : null,
@@ -1174,7 +1216,9 @@ window.__ModuleLoader__.load({
     function GhTrendingPage() {
       const [snap, setSnap] = useState(null);
       const [conn, setConn] = useState({ ok: false, note: '' });
-      const [tab, setTab] = useState('overview');
+      const [tab, setTab] = useState(pickOption(TABS, readUi().tab, 'overview'));
+      /** 切页签顺手落盘：宿主切走面板是整棵树重建（`main` keyed slot 只画命中的那一条），不落这一枚就回总览。 */
+      function goTab(next) { setTab(next); writeUi({ tab: next }); }
       const [checking, setChecking] = useState(false);
       const [lastErr, setLastErr] = useState('');
       const [checkNote, setCheckNote] = useState('');
@@ -1324,13 +1368,13 @@ window.__ModuleLoader__.load({
       else if (BOARDS().includes(tab)) panel = h(BoardCard, { snap, board: tab, onRepo });
       else if (tab === 'stars') panel = h(StarsCard, { snap, saving, onRepo, onSave: (p) => savePrefs(p) });
       else if (tab === 'events') panel = h(EventsCard, { snap });
-      else panel = h(OverviewTab, { snap, conn, onGo: setTab, onRepo });
+      else panel = h(OverviewTab, { snap, conn, onGo: goTab, onRepo });
 
       const opened = detail.repo !== '' || detail.view !== null;
       return h('div', { className: 'gt-root' },
         h('div', { className: 'gt-topbar' },
           h(Header, { snap, conn, checking, lastErr, checkNote, onCheck: doCheck }),
-          h(TabBar, { tab, onTab: setTab, snap })),
+          h(TabBar, { tab, onTab: goTab, snap })),
         panel,
         opened
           ? h(DetailModal, {
@@ -1363,6 +1407,8 @@ window.__ModuleLoader__.load({
     exports.PANEL_ID = PANEL_ID;
     exports.__test = {
       cfg, API_BASE, BOARDS, boardLabel, fmtAge, fmtIn, fmtCount, deltaCell, kindLabel, mergeFrame, api, consumeSse, TABS,
+      // ★ 第二十九轮：选择态落盘那三个（键名 / 读写 / 只认名单的回落），用例吃同一份出处、不自己拼键名
+      UI_KEY, readUi, writeUi, pickOption,
       repoLinkProps, escClose, IDLE_DETAIL, IDLE_MANUAL, expandBlocks, addedCell, starsPick,
       components: {
         Header, TabBar, OverviewTab, BoardMini, StatusCard, BoardCard, CrossCard,
