@@ -623,8 +623,21 @@ check('hc-20 详情缓存那一档的接线（第三十一轮改判：档位回�
   // ② 时长只在 domain 一处算：repo.js 判窗口吃注入点，自己不写"几小时"的数
   const rp = codeOf('lib/services/repo.js');
   assert.match(rp, /now\(\) - base < getTtlMs\(\)/, '窗口判据不吃注入点 ⇒ 同一档位可以在两处各写一个毫秒数');
-  assert.match(rp, /const base = num\(row\.checkedAt\) \?\? row\.at;/,
-    'D1 漂了：成功行判 `at` 会让 304 之后那一类行每次都出网（304 照扣 1 次配额，本机实测）');
+  // ★ D1 那把尺第三十四轮抽进了 domain（`repoAskedAt`），因为详情 TTL 与 `repo` 表裁行要读**同一把**尺：
+  //   这一支因此钉三处**接线**（调用点两处 + 尺子在 domain），语义的优先级（`checkedAt` 在前、`at` 只作回退）
+  //   不靠字面锚 —— 那边有 `store.test.mjs`「304 反复命中的那一行不能被删」和 `repo.test.mjs` 的 TTL 用例两条行为牙，
+  //   字面锚只负责"别绕开尺子自己数一遍"，锚得越死越容易被等价改写打回（§0 那条律）。
+  assert.match(rp, /const base = repoAskedAt\(row\);/,
+    'TTL 判据没用 domain 那把尺 ⇒ 窗口和裁行各数一遍"最后一次问过 GitHub"（一份真相裂成两份）');
+  const st = codeOf('lib/stores.js');
+  assert.equal((st.match(/repoAskedAt\(/g) ?? []).length, 2,
+    '`repo` 表的**裁行**与 **`list()`** 两处必须都吃那把尺：少一处就是那一处自己数了一遍 ⇒ §8.13 那处隐患回来（304 反复命中的那一行 `at` 是冻住的，按 `at` 排它第一个被删 = 越省额度越先没）');
+  assert.match(codeOf('lib/domain.js'), /export\s+(?:function|const)\s+repoAskedAt\b/,
+    '尺子不在 domain（或被搬走了）⇒ 上面两个调用点各自兜底，两处漂移没人拦');
+  assert.match(codeOf('lib/domain.js'), /numOf\(row\?\.checkedAt\)/,
+    'D1 漂了：尺子不再读 `checkedAt` ⇒ 成功行判 `at`，304 之后那一类行每次都出网（304 照扣 1 次配额，本机实测）');
+  assert.match(codeOf('lib/domain.js'), /numOf\(row\?\.at\)/,
+    '尺子丢了 `at` 回退 ⇒ 条件请求之前那种没有 `checkedAt` 的老行被判成 0，每次点开都出网');
   assert.doesNotMatch(rp, /\b(6|12|24|72) \* 60 \* 60|86_?400_?000|60 \* 1000\b/, 'repo.js 自己写了一个小时数或 60 秒（量级写歪本地看不出来）');
   // ③ 代码位认得这一档的文件清单（domain 定义 / stores 钳制 / api 校验 / index 载荷与装配 / repo 判窗口 / client 那一行）。
   //    ★ 改判以前这里扫的是"一处都不许留"；现在反着钉：清单少一个文件 = 链上有一环没接（库能存却不校验、能显示却不生效）。

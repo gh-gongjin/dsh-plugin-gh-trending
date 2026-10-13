@@ -496,16 +496,51 @@ check('repo：无设施时 available=false，读写都报 UNAVAILABLE（详情�
   await assert.rejects(() => repo.list(), (e) => e.code === RECORDS_ERROR.UNAVAILABLE);
 });
 
-check('repo：行数超过上限按最老的裁（点过的仓库不能无限堆在 KV 域里）', async () => {
+check('repo：行数超过上限按「最后一次问过」裁（★ 第三十四轮换尺子：缺 `checkedAt` 的老行回退 `at`）', async () => {
   const facility = makeFakeFacility();
   const repo = createRepoCacheStore({ getFacility: () => facility, maxRows: 3, logger: { warn: () => {} } });
   for (let i = 0; i < 5; i += 1) await repo.put(repoRow({ repo: `o/r${i}`, at: 1000 + i }));
   const listed = await repo.list();
   assert.deepEqual(listed.map((x) => x.key), ['o/r4', 'o/r3', 'o/r2']);
   assert.equal(listed[0].ok, true);
-  assert.equal(await repo.get('o/r0'), null, '最老的那行该被裁掉');
+  assert.equal(await repo.get('o/r0'), null, '最久没问的那行该被裁掉');
   assert.equal(facility.rowCount('gh_trending', 'repo'), 3);
   assert.equal(REPO_CACHE_MAX > 3, true, '出厂上限是宽松档，用例才敢用小值注入');
+  // ★ 这批行一个 `checkedAt` 都没有（条件请求之前那种老行）⇒ 尺子回退 `at`，顺序不许因为缺格而变成 0 垫底。
+  assert.deepEqual(listed.map((x) => x.askedAt), [1004, 1003, 1002],
+    'list() 给的 `askedAt` 必须与裁行吃的是同一格（界面/排障读的是这一份，两处不同尺就是两份真相）');
+});
+
+check('★ repo 裁行吃 `checkedAt` 而不是 `at`：304 反复命中的那一行不能被删（越省额度越先没 = §8.13 那处隐患）', async () => {
+  const facility = makeFakeFacility();
+  const repo = createRepoCacheStore({ getFacility: () => facility, maxRows: 3, logger: { warn: () => {} } });
+  // 现场：r-old 正文三天前取回（`at` 很老），但每一问都 304 ⇒ `checkedAt` 刚刚推进；r1~r3 正文新、却再没被点开过。
+  await repo.put(repoRow({ repo: 'o/r1', at: 8000 }));
+  await repo.put(repoRow({ repo: 'o/r2', at: 7000 }));
+  await repo.put(repoRow({ repo: 'o/r3', at: 6000 }));
+  await repo.put(repoRow({ repo: 'o/r-old', at: 1000, checkedAt: 9000 }));
+  const listed = await repo.list();
+  assert.deepEqual(listed.map((x) => x.key), ['o/r-old', 'o/r1', 'o/r2'],
+    '按「最后一次问过」排：`at` 最老但刚核对过的排第一；旧尺子（只看 at）会把它裁掉、留下从没再点开的 r3');
+  const kept = await repo.get('o/r-old');
+  assert.equal(kept && kept.repo, 'o/r-old', '★ 刚核对过的那行必须还在（旧形状：吃 at 排序 ⇒ 这一行第一个出局）');
+  assert.equal(await repo.get('o/r3'), null, '被裁的应是「最久没问」那一行，不是「正文最老」那一行');
+  assert.equal(facility.rowCount('gh_trending', 'repo'), 3);
+});
+
+check('★ 那把尺不吃脏时刻：库里躺着 `checkedAt: Infinity` / `"9000"`（手改 json、换机搬库）⇒ 按「没有这一格」回退 `at`', async () => {
+  const facility = makeFakeFacility();
+  const repo = createRepoCacheStore({ getFacility: () => facility, maxRows: 99, logger: { warn: () => {} } });
+  await repo.put(repoRow({ repo: 'o/clean', at: 5000, checkedAt: 6000 }));
+  await repo.put(repoRow({ repo: 'o/plain', at: 2000 }));
+  // ★ 这两行只能绕开 schema 塞（`checkedAt: optionalNumber` 在 `put` 那关就把它们挡了）：模拟外部改过的库、上一版写歪的行。
+  facility.seed('gh_trending', 'repo', 'o/str', { repo: 'o/str', at: 4000, ok: true, checkedAt: '9000' });
+  facility.seed('gh_trending', 'repo', 'o/inf', { repo: 'o/inf', at: 3000, ok: true, checkedAt: Infinity });
+  // `Infinity` 比字符串更毒：`b - a` 一减就是 `Infinity`，那一行直接插到最前，而它其实从没被问过。
+  assert.deepEqual(await repo.list().then((l) => l.map((x) => x.askedAt)), [6000, 4000, 3000, 2000],
+    '脏值不许参与比较：认不出就当没有这一格（回退 `at`），否则一个坏行把整表顺序带偏、裁行跟着删错行');
+  assert.deepEqual(await repo.list().then((l) => l.map((x) => x.key)), ['o/clean', 'o/str', 'o/inf', 'o/plain'],
+    '排序键与上面那条同源（同一把尺）：`list()` 交出去的那一份必须是能读的数，界面/排障拿它当"最后一次问过"');
 });
 
 /* ---------------- trans（模型译文） ---------------- */

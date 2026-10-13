@@ -11,12 +11,13 @@ import { fileURLToPath } from 'node:url';
 import { check, runAll, assert, fixture } from './_helpers.mjs';
 import {
   DESC_ZH_ROWS, DESC_ZH_AT, DESC_ZH_ORIGIN, DESC_ZH_LABEL, DESC_ZH_NOTE,
-  DESC_ZH_COUNT, descZhFor, descZhHits, descZhNorm,
+  DESC_ZH_COUNT, descZhFor, builtinDescZhMap, descZhNorm,
 } from '../lib/desc-zh.js';
 import { parseTrendingHtml } from '../lib/services/gh.js';
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 const ROOT_SRC = readFileSync(path.join(HERE, '..', 'lib', 'desc-zh.js'), 'utf8');
+const BOARD_SRC = readFileSync(path.join(HERE, '..', 'lib', 'board-zh.js'), 'utf8');
 const CJK_RE = /[㐀-鿿]/;
 
 check('dz-1 表体形状：主键小写、原文非空、译文是中文且不等于原文、主键不重号', () => {
@@ -87,9 +88,9 @@ check('dz-6 这份文件是死的：零 import、零 fetch、零宿主句柄 —
   }
 });
 
-check('dz-7 descZhHits 只收命中的行，键就是小写主键（客户端拿它直接取值，不再判一遍）', () => {
+check('dz-7 builtinDescZhMap 只收**内置表**命中的行，键就是小写主键（★ 第三十四轮改名消歧：它不是那句中文的判据单点）', () => {
   const [repo, src, zh] = DESC_ZH_ROWS[0];
-  const hits = descZhHits([
+  const hits = builtinDescZhMap([
     { repo, desc: src },
     { repo: 'other/one', desc: src },
     { repo: 'no/such', desc: 'whatever' },
@@ -99,8 +100,14 @@ check('dz-7 descZhHits 只收命中的行，键就是小写主键（客户端拿
   ]);
   assert.deepEqual(Object.keys(hits), [repo]);
   assert.equal(hits[repo], zh);
-  assert.deepEqual(descZhHits(), {}, '没有行就给空对象，别甩 undefined 让界面去猜');
+  assert.deepEqual(builtinDescZhMap(), {}, '没有行就给空对象，别甩 undefined 让界面去猜');
   assert.equal(descZhNorm('  a \n b  '), 'a b', '归一只该动空白');
+  // ★ 改名之后盘上**只剩一个** `descZhHits`（判据那一个）：这一条钉的是"消歧做到底了"，不是顺手加的装饰。
+  //   三种导出写法都算（`export function` / `export const` / `export { 别名 }`）—— 只钉一种，改天换个写法就漏网。
+  assert.equal(/export\s+(?:function|const|let|var)\s+descZhHits\b/.test(ROOT_SRC) || /export\s*\{[^}]*\bdescZhHits\b/.test(ROOT_SRC), false,
+    'lib/desc-zh.js 还在导出同名的 descZhHits ⇒ 判据单点那个名字有两个出处，grep 会一次搜到两个');
+  assert.equal(/export\s+(?:function|const|let|var)\s+descZhHits\b/.test(BOARD_SRC), true,
+    '反面自证：判据那一个仍在 `lib/board-zh.js`（上一条若把两个都清空也照样绿 = 判据空跑）');
 });
 
 await runAll('desc-zh');
