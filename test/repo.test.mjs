@@ -28,7 +28,7 @@ import {
 import { createRepoCacheStore } from '../lib/stores.js';
 import { DESC_ZH_ROWS, DESC_ZH_LABEL } from '../lib/desc-zh.js';
 import {
-  GITHUB_API_BASE, REPO_RATE_ANON, REPO_RATE_AUTH, DETAIL_RECHECK_MS, REPO_FAIL_TTL_MS, REPO_TIMEOUT_MS,
+  GITHUB_API_BASE, REPO_RATE_ANON, REPO_RATE_AUTH, REPO_CACHE_HOURS, REPO_CACHE_DEFAULT_HOURS, repoCacheTtlMs, REPO_FAIL_TTL_MS, REPO_TIMEOUT_MS,
   DEFAULT_PREFS,
   RATE_LABEL_ANON, RATE_LABEL_AUTH,
   README_HEAD_CHARS, README_ZH_MIN_CJK, README_ZH_SECTION_MIN_CJK, DESC_SELF_ZH_MIN_CJK,
@@ -1199,8 +1199,10 @@ check('视图的标签全部来自 domain 一张表（客户端不自己写中�
 });
 
 /* ------------------------------------------------------------------ *
- * 6. 缓存门面（60 秒防连点窗口 / 条件请求 / 去重 / 降级）
+ * 6. 缓存门面（四档可调 TTL / 条件请求 / 去重 / 降级）
  * ------------------------------------------------------------------ */
+/** 出厂那一档的毫秒数：**只从 domain 的函数算**，用例里不写第三个 86400000 字面量。 */
+const TTL_DEFAULT = repoCacheTtlMs(REPO_CACHE_DEFAULT_HOURS);
 async function mkService({ rows = [], clock = { at: NOW() }, storeOpts = {}, table } = {}) {
   const facility = makeFakeFacility();
   const store = createRepoCacheStore({ getFacility: () => facility, logger: { warn: () => {} }, ...storeOpts });
@@ -1208,8 +1210,8 @@ async function mkService({ rows = [], clock = { at: NOW() }, storeOpts = {}, tab
   for (const r of rows) facility.seed('gh_trending', 'repo', String(r.repo).toLowerCase(), r);
   // 默认三档真夹具；条件请求那几条换 `table`（要往响应头里塞 etag 就得自己铺表）。
   const f = table ?? fullTable();
-  // ★ 第二十七轮：这里不再交 `getTtlMs` —— 小时档整条撤了，窗口是 domain 的 `DETAIL_RECHECK_MS` 一个常数。
-  //   旧注释那条律（用例不许在第三处写毫秒数）原样留着，只是现在连注入点都不该存在。
+  // ★ 第三十一轮：这里**不交** `getTtlMs` —— 交的是服务自己的默认（= 出厂那一档按 `repoCacheTtlMs` 现算），
+  //   用例要验"改档下一发就生效"时自己交一颗会变的钟（见那条新判据），别在这里抄毫秒数。
   const svc = createRepoDetailService({ repoStore: store, fetchFn: f, now: () => clock.at });
   return { svc, f, store, facility, clock };
 }
@@ -1240,12 +1242,12 @@ const inmOf = (seen) => seen.map((s) => {
   return k ? s.headers[k] : '';
 });
 
-check('库里躺着 60 秒内的那一行 ⇒ 第一次点击也不出网，中文段表仍由入库字段拼出来', async () => {
+check('库里躺着 TTL 之内的那一行 ⇒ 第一次点击也不出网，中文段表仍由入库字段拼出来', async () => {
   const seeded = await antRow(NOW() - 30_000);
   const { svc, f } = await mkService({ rows: [seeded] });
   const v = await svc.load(ANT);
   assert.equal(v.cached, true);
-  assert.equal(f.seen.length, 0, '窗口内还打接口 = 用户连点两下烧两发限额');
+  assert.equal(f.seen.length, 0, 'TTL 内还打接口 = 用户连点两下烧两发限额（304 也照扣 1，本机实测）');
   assert.equal(v.readmeSource, 'zh_file');
   assert.match(secTexts(v.sections, 'what'), /React/, '入库行拼不出描述那句 ⇒ 存的时候漏了字段');
   assert.ok(secOf(v.sections, 'self').blocks.some((b) => b.kind === 'excerpt'), '入库行拼不出 README 节选块 ⇒ 存的字段不够界面用');
@@ -1253,25 +1255,54 @@ check('库里躺着 60 秒内的那一行 ⇒ 第一次点击也不出网，中�
   assert.ok(secOf(v.sections, 'heat').facts.some((x) => x.key === 'stars'), '入库行拼不出元数据条，说明存的字段不够界面用');
 });
 
-check('★ 60 秒窗口内第二次点击一发不出网；过了 60 秒就再问一次（档位撤了，窗口只有 domain 那一个常数）', async () => {
+check('★ 出厂那一档（24 小时）内第二次点击一发不出网；过那一档才再问一次（第三十一轮：档位回来了，60 秒那一档撤了）', async () => {
   const { svc, f, clock } = await mkService();
   await svc.load(ANT);
   assert.equal(f.seen.length, 4);
-  clock.at += DETAIL_RECHECK_MS - 1;
+  clock.at += TTL_DEFAULT - 1;
   const hit = await svc.load(ANT);
   assert.equal(hit.cached, true);
-  assert.equal(f.seen.length, 4, '没到 60 秒就重取 ⇒ 防连点那一档形同不存在');
+  assert.equal(f.seen.length, 4, '没到那一档就重取 ⇒ 用户要的就是"缓存 24 小时"，这一条直接违背他的裁定');
   clock.at += 2;
   await svc.load(ANT);
-  assert.equal(f.seen.length, 8, '过了 60 秒该再问一次：条件请求的前提是"每次都问"，不问就不知道有没有变');
+  assert.equal(f.seen.length, 8, '过了那一档该再问一次：过期那一问问的是验证器（条件请求），不问就不知道有没有变');
 });
 
-check('★ 60 秒那一格只有一个出处：DETAIL_RECHECK_MS = 60_000，domain 里不再有小时档那三个名字', async () => {
-  assert.equal(DETAIL_RECHECK_MS, 60 * 1000, '写死一个毫秒数 ⇒ 界面撤了档位而窗口可以和 60 秒分叉');
-  const dom = await import('../lib/domain.js');
-  const leftovers = Object.keys(dom).filter((k) => /CACHE_HOUR|repoCacheTtlMs|CACHE_TTL/i.test(k));
-  assert.deepEqual(leftovers, [], `小时档的残留导出：${leftovers.join(', ')} —— 档撤了还留着名字是第二份真相`);
-  assert.equal('repoCacheHours' in DEFAULT_PREFS, false, '出厂偏好里还躺着那一格 ⇒ 界面上没有它、库里却有它');
+check('★ 过期那一问再按用户改的那一档现算：装配后改档，下一发就按新档判，不用重启宿主', async () => {
+  // 这一条钉的是第十二轮那条律（第三十一轮随档位回来）：TTL 必须**调用时现取现算**。
+  //   形状 = 一颗会变的偏好指针 + 一行"10 小时前问过"的库：指到 72 小时它在档内（一发不发），
+  //   拨到 6 小时它就该过期（问）。装配时把毫秒抄死（`ttlMs = repoCacheTtlMs(...)`）的话这颗闭包不会被第二次调用，
+  //   而界面上的分段器已经显示成新档了 —— 那条假话在屏上看不出来，只能这样两个方向各拿一次。
+  let hours = 72;
+  const facility = makeFakeFacility();
+  const store = createRepoCacheStore({ getFacility: () => facility, logger: { warn: () => {} } });
+  await store.get('open/first');
+  // 「10 小时前问过」是**数据**，不是档位：自己按小时算，别拿 `repoCacheTtlMs(10)` 蒙 —— 10 不在四档里，它会退回 24。
+  const seeded = await antRow(NOW() - 10 * 60 * 60 * 1000);
+  facility.seed('gh_trending', 'repo', String(ANT).toLowerCase(), seeded);
+  const f = fullTable();
+  const svc = createRepoDetailService({
+    repoStore: store, fetchFn: f, now: () => NOW(),
+    getTtlMs: () => repoCacheTtlMs(hours),
+  });
+  const inside = await svc.load(ANT);
+  assert.equal(inside.cached, true, '72 小时那一档没吃到 ⇒ 10 小时前的行被当过期，用户选了长档却照样每次出网');
+  assert.equal(f.seen.length, 0, '档内却发了东西 ⇒ "选定小时数之内一次都不问"那句话是假的');
+  hours = 6;
+  const outside = await svc.load(ANT);
+  assert.equal(outside.cached, false, '拨到 6 小时后 10 小时那行还 cached ⇒ 现取现算没生效，改档要等宿主重启');
+  assert.equal(f.seen.length, 4, '过档那一问没发满 ⇒ 这一路该由闸门决定发数，不是靠档位蒙过去的');
+});
+
+check('★ 那一档只有一个出处：四档封闭 + 越界退回出厂 24，出厂偏好里那一格必须在名单里', async () => {
+  assert.deepEqual(REPO_CACHE_HOURS, [6, 12, 24, 72], '档位名单漂了：设置页那排分段器与 clampPrefs 会各认一套');
+  assert.equal(REPO_CACHE_DEFAULT_HOURS, 24, '出厂档漂了：用户没动过设置却拿到另一个窗口');
+  assert.equal(DEFAULT_PREFS.repoCacheHours, REPO_CACHE_DEFAULT_HOURS, '出厂偏好没吃那一格 ⇒ 同一个"24"有了两处字面量');
+  assert.ok(REPO_CACHE_HOURS.includes(DEFAULT_PREFS.repoCacheHours), '出厂值不在自己的名单里 ⇒ clampPrefs 会把默认值判成脏');
+  for (const bad of [5, 0, 100, 'abc', null, undefined]) {
+    assert.equal(repoCacheTtlMs(bad), repoCacheTtlMs(REPO_CACHE_DEFAULT_HOURS), `${JSON.stringify(bad)} 没退回出厂档 ⇒ 两处（这里与 clampPrefs）算出第二个答案`);
+  }
+  assert.equal(repoCacheTtlMs(6), 6 * 60 * 60 * 1000, '6 小时那一档算成别的量级（写成 6 分或 6 毫秒本地都看不出来）');
 });
 
 /* ---- 第二十七轮：条件请求（每次点开都问，没变就复用正文）---- */
@@ -1289,7 +1320,7 @@ check('★ 200 那一问把 GitHub 回的验证器**原样**落库（弱标 W/ �
   })();
   assert.equal(row.etagMeta, ETAG_META, '存进去又读不出来等于没存：下一问只能裸发，条件请求整轮白做');
   assert.equal(row.etagReadme, ETAG_RD);
-  assert.equal(row.checkedAt, NOW(), '问过的那一刻没落库 ⇒ 60 秒窗口退回按正文时刻判，每点一次问一次');
+  assert.equal(row.checkedAt, NOW(), '问过的那一刻没落库 ⇒ TTL 只能退回按正文时刻判，304 之后每点一次问一次');
   assert.equal(row.zhProbed, true, '第三十轮那一格没跟着落库（schema 或白名单漏了它）⇒ 库里那一行永远自称没探完，每一问都裸发四发');
   assert.equal(row.version ?? 1, 1, '加三格不吃版本号：抬了旧库读不出');
 });
@@ -1362,8 +1393,8 @@ check('★ 库里那一行缺「中文那一档探完了」那一格（zhProbed 
     '探完没把 true 写回 ⇒ "下一次多花两发"的一次性代价变成每一问的永久代价');
 });
 
-check('★ 同一行只要那一格是 true 就照旧复用（60 秒外两发带钥匙、正文一个字不动）：闸门只挡"没探完"的', async () => {
-  const seeded = await antRow(NOW() - 86_400_000);
+check('★ 同一行只要那一格是 true 就照旧复用（过档那一问两发带钥匙、正文一个字不动）：闸门只挡"没探完"的', async () => {
+  const seeded = await antRow(NOW() - 2 * TTL_DEFAULT);
   const { svc, f } = await mkService({ rows: [seeded], table: antTable() });
   const d = await svc.load(ANT);
   assert.equal(f.seen.length, 2, `那一格齐的行还去裸发 ⇒ 省额度白做：发了 ${f.seen.length} 发`);
@@ -1385,9 +1416,11 @@ check('★★ 冻结那一形自愈（10-12 那两个读数）：中文那一发
   const row = repoCacheRow(r);
   assert.equal(row.zhProbed, false, 'false 没进库 ⇒ "探到一半"与"从没探过"在库里同形，下一问无从分辨');
 
-  // 第二问走 svc：那道闸门在 `load()` 侧而不在 fetchRepoDetail 里（探针已证直接递 prev 仍会 304）
+  // 第二问走 svc：那道闸门在 `load()` 侧而不在 fetchRepoDetail 里（探针已证直接递 prev 仍会 304）。
+  //   ★ 第三十一轮把这一问的钟拨到 **TTL 之内**（上一问后 1 分钟）：这样"出网"的唯一理由就是那一格不是 true，
+  //   判据才有牙 —— 落在档外时，撤掉闸门这条变异照样过窗出网，红不了。
   const { svc, f, store } = await mkService({
-    rows: [row], clock: { at: NOW() + 86_400_000 }, table: antTable(),
+    rows: [row], clock: { at: NOW() + 60_000 }, table: antTable(),
   });
   const d = await svc.load(ANT);
   assert.deepEqual(inmOf(f.seen), ['', '', '', ''], `那一格是 false 还喂验证器 ⇒ 自愈这一路压根走不通：${JSON.stringify(inmOf(f.seen))}`);
@@ -1501,23 +1534,25 @@ check('★ refresh=true 一个字都不带验证器：那颗按钮写着「不�
   assert.equal(v.revalidated, false, '真刷新拿到新正文，那句「刚核对过」不该出现');
 });
 
-check('★ 窗口量的是 checkedAt 而不是 at：304 之后 at 还是三天前，60 秒内再点照样一发不发', async () => {
-  const threeDaysAgo = NOW() - 3 * 86_400_000;
+check('★ TTL 量的是 checkedAt 而不是 at：304 之后 at 还是三天前，同一档内再点照样一发不发', async () => {
+  const threeDaysAgo = NOW() - 3 * TTL_DEFAULT;
   const prev = await antRow(threeDaysAgo);
   const { svc, f, clock } = await mkService({ rows: [prev], table: antTable() });
   const first = await svc.load(ANT);
   assert.equal(first.revalidated, true);
   assert.equal(first.at, threeDaysAgo);
   assert.equal(f.seen.length, 2);
-  clock.at += DETAIL_RECHECK_MS - 1;
+  clock.at += TTL_DEFAULT - 1;
   const second = await svc.load(ANT);
-  assert.equal(second.cached, true, '正文时刻在窗口外就问 ⇒ 每次点开都烧两发限额，60 秒那一档形同不存在');
+  assert.equal(second.cached, true, '拿正文时刻判 TTL ⇒ 304 冻住 at 后每次点开都烧两发限额（304 照扣 1），用户要的"缓存 24 小时"直接落空');
   assert.equal(f.seen.length, 2);
-  assert.equal(second.revalidated, true, '缓存命中那一路也得把「刚核对过」带着走（判据在库里的 checkedAt 与 at 之间，不是新拼的）');
+  // ★ 第三十一轮改判（D3）：这一问压根没出网，那句「刚核对过」说的却是"刚刚核对" ⇒ 恒 false。
+  //   库里 checkedAt>at 是真（三天前取正文、刚才那次问过），但那是**上一问**的事，不能挪到这一屏头上说"刚"。
+  assert.equal(second.revalidated, false, 'TTL 命中还说「刚核对过」⇒ 落款在替上一问领奖，用户看不出这一发都没发');
   assert.equal(second.at, threeDaysAgo);
   clock.at += 2;
   await svc.load(ANT);
-  assert.equal(f.seen.length, 4, '过窗后该再问一次');
+  assert.equal(f.seen.length, 4, '过那一档后该再问一次');
 });
 
 check('失败行只钉 5 分钟：改名后重点，过窗就给新答案', async () => {
@@ -1732,11 +1767,14 @@ check('库里躺着外部改过的脏行（手改 json / 换机搬库）：详�
     stars: 'abc', forks: null, lang: 42, topics: 'not-an-array', license: { spdx: 'MIT' },
     pushedAt: 12345, homepage: {}, readmeSource: 'zh_file', readmePath: 'README-zh_CN.md',
     readmeExcerpt: '一套企业级 UI 设计语言', readmeChars: '很多', zhCjk: -1,
+    // ★ 第三十一轮补这一格：缺着它的话，这一行按 D2 该出网重判（那是 1381 那条的活），
+    //   本条只管"脏字段糊不上屏"，两件事别搅在一条用例里。
+    zhProbed: true,
   };
   const { svc, f } = await mkService({ rows: [dirty] });   // seed 是绕开 schema 塞进去的（模拟外部改库）
   const v = await svc.load(ANT);
   assert.equal(v.cached, true);
-  assert.equal(f.seen.length, 0, '库里就有今天的行，脏成什么样都不该再烧一发限额');
+  assert.equal(f.seen.length, 0, '库里就有今天那一问、那一格也齐，脏成什么样都不该再烧一发限额');
   const text = allText(v.sections);
   assert.doesNotMatch(text, /用 42 写|\[object Object\]|累计  星/, `脏字段糊进了中文段：${text}`);
   // 脏得连一个可信字段都不剩 ⇒ 只剩「仓库没有写描述。」那句实话，别的段整段不摆
@@ -1990,14 +2028,14 @@ check('展开的是屏上那一篇：path 空或 README 走 /readme，其余逐�
     '中文文件名不 encode 就会打到另一个路径上（第十五轮那条 zh_file 的活靶子）');
 });
 
-check('零入库、不进 60 秒窗口：这一发跑完库里那行一个字没变，下一次点开详情照旧自己问它的四发', async () => {
+check('零入库、不进 TTL 那一路：这一发跑完库里那行一个字没变，下一次点开详情照旧自己问它的四发', async () => {
   const s = await mkService();
   const before = s.facility.rowCount('gh_trending', 'repo');
   const one = await s.svc.fullReadme(ANT);
   assert.equal(one.ok, true);
   assert.equal(s.facility.rowCount('gh_trending', 'repo'), before, '整篇入库的账在 spec §8.11 第 ⑩ 条：行均 17KB→50KB，而开域要整读');
   assert.equal((await s.store.list()).length, before, '门面也没顺手把整篇塞成一行失败留档');
-  // 展开不是"看过一次详情"：紧接的 load 仍按自己的口径发（那 1 发 fullReadme 不算进 60 秒窗口，也不喂验证器）
+  // 展开不是"看过一次详情"：紧接的 load 仍按自己的口径发（那 1 发 fullReadme 不进 TTL 判定，也不喂验证器）
   const f2 = fullTable();
   const s2 = await mkService({ table: f2 });
   await s2.svc.fullReadme(ANT);

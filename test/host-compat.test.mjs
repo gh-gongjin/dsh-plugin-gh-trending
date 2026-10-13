@@ -17,13 +17,16 @@ import { check, runAll, assert, makeFakeFacility, makeFakeCtx, makeReq, makeRes,
 import { apply, resolveConfig, DEFAULT_CONFIG, name as PLUGIN_NAME, inject as HARD_INJECT, __peek } from '../index.js';
 import { GLOBAL_KEY, ROUTE_PREFIX } from '../lib/api.js';
 import { BOARDS, BOARD_LABELS, BOARD_ADDED_LABELS, CHECK_INTERVALS, CHECK_INTERVAL_LABELS,
-  DETAIL_RECHECK_MS, DETAIL_STAMP_LABELS,
+  DETAIL_STAMP_LABELS, REPO_CACHE_HOURS, REPO_CACHE_HOUR_LABELS, REPO_CACHE_DEFAULT_HOURS, repoCacheTtlMs,
   EVENT_KIND_LABELS, EVENT_KINDS, DEFAULT_PREFS, TRENDING_SOURCE_NOTE, LANG_CHECK, CROSS_MIN_BOARDS,
   PROXY_MODES, TRANSLATE_CRED_FIELDS, TRANSLATE_CRED_ALL,
   // ★ 第二十一轮：凭据清单在 domain 派生成一份（含 GitHub 令牌那把）；判据扫的是派生后那份，
   //   旧的那份只列三家翻译的 ⇒ 拿它当"全部密钥"就漏扫了令牌（手抄必漏，见 hc-0）。
   PREF_CRED_FIELDS, PREF_SECRET_KEYS } from '../lib/domain.js';
 import { GHT_DOMAIN } from '../lib/domain.js';
+// ★ 第三十一轮：整个模块当命名空间再引一次 —— 「那个撤掉的常数还在不在导出里」只能用这种问法（`in`），
+//   具名 import 一个不存在的导出会在装载期就炸，炸在别的用例头上、报的不是这一笔账。
+import * as DOMAIN from '../lib/domain.js';
 
 const ROOT = path.dirname(path.dirname(new URL(import.meta.url).pathname.slice(1)));
 /**
@@ -333,7 +336,8 @@ check('hc-10 全服务落地：路由注册在 /gh-trending 前缀，且是 kind
 /** index-inject 载荷的键全集（客户端读到的每一项都得有人给）。 */
 const PAYLOAD_KEYS = ['panelId', 'label', 'panelOrder', 'routePrefix', 'api', 'capabilities', 'capabilityRows',
   'boards', 'boardLabels', 'boardAddedLabels', 'sourceNote', 'langCheck', 'crossMin',
-  'intervals', 'intervalLabels', 'detailStampLabels', 'proxyModes', 'proxyModeLabels', 'proxyModeHints', 'proxyUrlMax',
+  'intervals', 'intervalLabels', 'cacheHours', 'cacheHourLabels', 'detailStampLabels',
+  'proxyModes', 'proxyModeLabels', 'proxyModeHints', 'proxyUrlMax',
   'topNRange', 'keepEventsRange', 'eventKindLabels', 'defaults', 'builtAt'];
 
 check('hc-11 入口载荷：webServer 到位才推，字段一个不少', () => {
@@ -360,12 +364,17 @@ check('hc-11 入口载荷：webServer 到位才推，字段一个不少', () => 
   assert.deepEqual(v.eventKindLabels, EVENT_KIND_LABELS);
   assert.deepEqual(Object.keys(v.eventKindLabels).sort(), [...EVENT_KINDS].sort(), '事件枚举与片名表必须同集合');
   assert.deepEqual(v.intervals, CHECK_INTERVALS);
-  // ★ 第二十七轮：这里原来是第十二轮那两格（档位名单 + 档位话术表），随那一档整链撤掉 ——
-  //   详情改条件请求以后没有任何"时长"可选，载荷里再给一份档位就是界面上摆不出来的第二份真相。
-  assert.deepEqual(v.detailStampLabels, DETAIL_STAMP_LABELS, '那句落款的三个词只在 domain 一份，装配处只递名字');
-  assert.deepEqual(Object.keys(v.detailStampLabels).sort(), ['body', 'revalidated', 'windowHit'], '载荷的形状漂了：客户端读的是这三格');
-  assert.equal('cacheHours' in v, false, '载荷还在推档位名单 ⇒ 撤档只撤了界面，链没拆完');
-  assert.equal('repoCacheHours' in v.defaults, false, '出厂偏好里还留着那一格');
+  // ★ 第三十一轮（10-12 用户亲手撤销第二十七轮那次撤档）：第十二轮那两格（档位名单 + 档位话术表）回到载荷。
+  //   少发一档 = 设置页那一排摆不出按钮（客户端不自己列名单）；多发一档 = 话术表缺文案。
+  assert.deepEqual(v.cacheHours, REPO_CACHE_HOURS, '载荷推的档位名单与 domain 那份不是同一份 ⇒ 设置页那一排按一个没人读的名单摆');
+  assert.deepEqual(Object.keys(v.cacheHourLabels).map(Number).sort((a, b) => a - b), REPO_CACHE_HOURS,
+    '档位与话术表不同集合 ⇒ 有一档按钮上只有裸数字');
+  assert.equal(v.cacheHours[0], 6, '档位是封闭四档，漂一位要连着改话术表与 400 校验');
+  assert.deepEqual(v.cacheHours, [6, 12, 24, 72]);
+  assert.equal(v.defaults.repoCacheHours, REPO_CACHE_DEFAULT_HOURS, '出厂偏好里那一格与 domain 的出厂档不是同一个数');
+  assert.deepEqual(v.detailStampLabels, DETAIL_STAMP_LABELS, '那句落款的两个词只在 domain 一份，装配处只递名字');
+  assert.deepEqual(Object.keys(v.detailStampLabels).sort(), ['body', 'revalidated'],
+    '载荷的形状漂了：客户端读的是这两格（第三截 `windowHit` 随 60 秒那一档一起撤）');
   assert.deepEqual(v.proxyModes, PROXY_MODES);
   assert.deepEqual(Object.keys(v.proxyModeLabels).sort(), [...PROXY_MODES].sort(), '三档的话术表与档位集合必须同集合');
   assert.deepEqual(Object.keys(v.proxyModeHints).sort(), [...PROXY_MODES].sort());
@@ -602,38 +611,54 @@ check('hc-19 ★密钥边界：四把密钥（三家翻译 + 第二十一轮那�
   await flush(5);
 });
 
-check('hc-20 详情窗口的接线（第二十七轮）：装配处不再交 TTL 注入点，60 秒那一格与那句落款的词各只有一份出处', () => {
+check('hc-20 详情缓存那一档的接线（第三十一轮改判：档位回来，60 秒那一格撤干净）：装配现取现算、时长只有一份出处、界面不写档位', () => {
   const idx = codeOf('index.js');
-  assert.doesNotMatch(idx, /getTtlMs|repoCacheTtlMs/,
-    'index.js 还在按偏好现取一个 TTL ⇒ 档位已经撤了，这个注入点没有喂主，留着是第二份真相');
-  assert.doesNotMatch(idx, /\bttlMs\s*:/,
-    '装配处出现 ttlMs: = 把毫秒锁在装配时（第十二轮批评过的那个形状，撤档之后更不该留）');
-  // 界面那句落款的两个词只在 domain 一份，装配处只递名字；抄进 index 或 client 就是第二个出处。
+  // ① 装配必须把 TTL 注入点交出去，而且**现取现算**（第十二轮那条律跟着档位一起回来）：
+  //    设置页改档后 `prefsView` 立刻是新值，下一发详情就该按新档判；装配时锁死毫秒 = 界面新、真跑的窗口还旧。
+  assert.match(idx, /getTtlMs:\s*\(\)\s*=>\s*repoCacheTtlMs\(getPrefs\(\)\.repoCacheHours\)/,
+    'index.js 没按偏好现取 TTL ⇒ 那一档改了不生效（要么锁在装配时，要么根本没接）');
+  assert.doesNotMatch(idx, /\bttlMs\s*:/, '装配处出现 ttlMs: = 把毫秒锁在装配时（第十二轮批评过的那个形状）');
+  // ② 时长只在 domain 一处算：repo.js 判窗口吃注入点，自己不写"几小时"的数
+  const rp = codeOf('lib/services/repo.js');
+  assert.match(rp, /now\(\) - base < getTtlMs\(\)/, '窗口判据不吃注入点 ⇒ 同一档位可以在两处各写一个毫秒数');
+  assert.match(rp, /const base = num\(row\.checkedAt\) \?\? row\.at;/,
+    'D1 漂了：成功行判 `at` 会让 304 之后那一类行每次都出网（304 照扣 1 次配额，本机实测）');
+  assert.doesNotMatch(rp, /\b(6|12|24|72) \* 60 \* 60|86_?400_?000|60 \* 1000\b/, 'repo.js 自己写了一个小时数或 60 秒（量级写歪本地看不出来）');
+  // ③ 代码位认得这一档的文件清单（domain 定义 / stores 钳制 / api 校验 / index 载荷与装配 / repo 判窗口 / client 那一行）。
+  //    ★ 改判以前这里扫的是"一处都不许留"；现在反着钉：清单少一个文件 = 链上有一环没接（库能存却不校验、能显示却不生效）。
+  const ALLOW = ['client.js', 'index.js', 'lib/api.js', 'lib/domain.js', 'lib/services/repo.js', 'lib/stores.js'];
+  const known = HOST_FILES.filter((f) => /repoCacheHours|REPO_CACHE_HOURS|REPO_CACHE_HOUR_LABELS|REPO_CACHE_DEFAULT_HOURS|repoCacheTtlMs|cacheHours/.test(codeOf(f))).sort();
+  assert.deepEqual(known, ALLOW, `代码位认得这一档的文件与清单不一致：多 ${known.filter((f) => !ALLOW.includes(f))} / 少 ${ALLOW.filter((f) => !known.includes(f))}`);
+  // ④ 界面一个字不写档位：名单与中文标签都从载荷吃（客户端自列档位 = 第二份真相，改一档要改两处）
+  const cl = codeOf('client.js');
+  assert.match(cl, /cfg\(\)\.cacheHours/, '设置页那一排不是从载荷来的 ⇒ 档位名单有了第二个出处');
+  assert.doesNotMatch(cl, /['"`](6|12|24|72) 小时|3 天/, 'client.js 写了档位话术 ⇒ 载荷那份标签表没人读');
+  assert.doesNotMatch(cl, /\b(6|12|24|72)\s*\*\s*60/, 'client.js 自己算毫秒 ⇒ 时长有了第二处出处');
+  // ⑤ 那句落款的两个词只在 domain 一份，装配处只递名字；抄进 index 或 client 就是第二个出处。
   assert.match(idx, /detailStampLabels:\s*DETAIL_STAMP_LABELS/, '载荷没把那一格递出去 ⇒ 客户端读不到词，那句落款会整句消失');
   assert.doesNotMatch(idx, /正文取回于|刚核对过/, 'index.js 抄了那两个词');
-  assert.doesNotMatch(codeOf('client.js'), /正文取回于|刚核对过/, 'client.js 自己写了那两个词 ⇒ 同一句话有了第二处');
-  // ★ 撤档要撤干净：整条链（domain 定义 / stores 钳制 / api 校验 / index 载荷 / 界面那一行）在**代码位**一处都不认得这个键。
-  //   注释位留着那笔账的去处（10-07 的血案写在 schema 那一段），所以扫的是 codeOf。
-  const leftover = HOST_FILES.filter((f) => /repoCacheHours|REPO_CACHE_HOURS|repoCacheTtlMs/.test(codeOf(f)));
-  assert.deepEqual(leftover, [], `还有文件在代码位认得那个撤掉的键：${leftover.join(', ')}`);
-  // 窗口那一格：判据吃 domain 的常数，不在 repo.js 里另写一个毫秒数
-  const rp = codeOf('lib/services/repo.js');
-  assert.match(rp, /now\(\) - base < DETAIL_RECHECK_MS/, '窗口判据不吃那个常数 ⇒ 60 秒可以在两处各写一个数');
-  assert.doesNotMatch(rp, /60 \* 1000|60_000|60000/, 'repo.js 自己写了一个 60 秒的毫秒数（量级写歪本地看不出来）');
+  assert.doesNotMatch(cl, /正文取回于|刚核对过/, 'client.js 自己写了那两个词 ⇒ 同一句话有了第二处');
+  // ⑥ 60 秒那一格撤干净：常数不再存在，词表回到两项，第三截那句子整条链都没了
+  assert.equal('DETAIL_RECHECK_MS' in DOMAIN, false,
+    'domain 还在导出 60 秒那个常数 ⇒ 撤掉的档位有了第二个住处，界面上却说不出它');
+  assert.deepEqual(Object.keys(DETAIL_STAMP_LABELS), ['body', 'revalidated'], '落款词表不是两项 ⇒ 第三截的残迹还在载荷里');
+  assert.doesNotMatch(codeOf('lib/domain.js'), /windowHit|秒内没再问/, 'domain 还留着那第三截的句子');
+  // ⑦ 强制刷新那一发一个字都不喂 prev（第二十七轮的律，第三十轮补的中文闸门同一条），档位回来不改这一条
   assert.match(rp, /const prev = !refresh && stored\?\.ok === true && stored\.zhProbed === true \? stored : null;/,
     '强制刷新那一发必须一个字都不喂 prev：带着旧验证器去问就是"看着像刷新、其实换回 304 的老正文"；第三十轮再加一条 —— 中文那一档没探完的行也不喂（喂了就 304，一 304 整条探测跳过，半截结论永久冻结）');
-  assert.doesNotMatch(codeOf('client.js'), /\d+ 秒内没再问/, 'client.js 自己写了那第三个词的秒数 ⇒ 窗口时长有了第二处出处，改 DETAIL_RECHECK_MS 时界面会说谎');
-  assert.equal(DETAIL_RECHECK_MS, 60 * 1000, '常数本身钉住：写成 60 分或 60 毫秒都不会在本地露出来');
-  // ★ 第三十轮：那第三截里的秒数必须**从常数现拼**。写死 60 的话，哪天改窗口时长（常数改了、句子没改），
-  //   屏上那句「60 秒内没再问 GitHub」就成了谎话 —— 而它在 domain 里，客户端与 index 都抄不到，本地看不出分叉。
-  assert.ok(codeOf('lib/domain.js').includes('windowHit: `${DETAIL_RECHECK_MS / 1000} 秒'),
-    '那句落款的秒数不是从 DETAIL_RECHECK_MS 现拼 ⇒ 窗口时长有了两个出处');
+  // ⑧ 那一格在 schema 里必须是 optional（10-07 血案：写成 requiredInt 会让老库那一行挡在 open 里 ⇒ 三榜全红）
+  assert.match(codeOf('lib/domain.js'), /repoCacheHours:\s*optionalInt\(/,
+    'prefs schema 里那一格不是 optional ⇒ 上一版库存（没有它）在 open 里 parse 不过，整个域打不开');
+  assert.doesNotMatch(codeOf('lib/domain.js'), /repoCacheHours:\s*requiredInt\(/, '同上，那条血案的形状');
+  // ⑨ 出厂档必须在封闭档位名单里（否则 clamp 每轮都改写它，界面上选中那一枚是补出来的默认而非出厂值）
+  assert.ok(REPO_CACHE_HOURS.includes(REPO_CACHE_DEFAULT_HOURS), '出厂档不在四档里 ⇒ 每次读库都要被钳一次');
+  assert.equal(repoCacheTtlMs(REPO_CACHE_DEFAULT_HOURS), 24 * 60 * 60 * 1000, '出厂那一档不是 24 小时 ⇒ 用户 10-12 那条裁定没落地');
 });
 
 check('hc-21 GitHub 令牌的接线（第二十一轮）：装配处现取现算，令牌的读者只有详情那一路，界面不抄那两个词', () => {
   const idx = codeOf('index.js');
   assert.match(idx, /getGhToken:\s*\(\)\s*=>\s*getPrefs\(\)\.ghToken/,
-    'index.js 没把令牌接成按偏好现取现算 ⇒ 用户在设置页填了令牌，真跑的那一发仍是装配时空的那一份（"保存了却没生效"正是 hc-20 撤掉的那条 TTL 链的形状）');
+    'index.js 没把令牌接成按偏好现取现算 ⇒ 用户在设置页填了令牌，真跑的那一发仍是装配时空的那一份（"保存了却没生效"正是 hc-20 那条 TTL 链同一条律的形状）');
   assert.doesNotMatch(idx, /const\s+\w*token\w*\s*=/i, '装配处把令牌存成变量 ⇒ 它在装配层多活了一份，改档与清空都追不上');
   // 令牌的键名在宿主半边只许这三处出现：domain（登记）、repo.js（唯一读者）、index.js（把那把现取现算地递过去）。
   // ★ 写路径/回显闸门/界面都**不点名**它（吃的是 PREF_CRED_FIELDS 那份派生表）⇒ 点名处多一处，就是多一个能把令牌递错的出口。

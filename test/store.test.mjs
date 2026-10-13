@@ -651,28 +651,34 @@ check('并发：同表多写串行落库，顺序确定且失败不堵队列', a
   assert.deepEqual(BOARDS.map((b) => (all[b] ? 'ok' : 'null')), ['ok', 'ok', 'ok']);
 });
 
-check('★ prefs：详情缓存档（第十二轮）撤销后，老库里多出来的那一格既不读出来也写不进去（撤档要撤干净）', async () => {
-  // 用户裁定「撤掉这一行，改成固定 60 秒防连点」⇒ 界面上没有那一档，库里就不该再有它的读数（第二份真相）。
-  // ★ 方向性取证在 `tmp/probe-schema-drop.mjs`（真 schema + 真仓储读路径，10-10 留档）：
-  //   未声明的多余键被 record() **静默丢掉**、不报错 ⇒ 老库那一行照常 parse 得过，撤格方向安全。
+check('★ prefs：详情缓存那一格（第三十一轮加回）只认四档、缺格回落出厂 24，且老行缺它照样 open 得过', async () => {
+  // 第十二轮定档 → 第二十七轮撤 → 第三十一轮（10-12 用户裁定）加回。这一条是**就地改判**，不是新用例：
+  //   旧写法断的是"撤档要撤干净"（读出来没有它、也写不进去），现在断的是另一头——档位是活的，但**加格的方向必须宽容**。
+  //   ⚠️ 血案口径原样保留（下面 707 那条同尺子的判据还在管 open）：这一格写成 `requiredInt` 的话，
+  //   第十二轮之前那份库存压根没有它 ⇒ 宿主 open 当场抛、三榜全红「存储不可用」（10-07 真机事故）。
   const s = mk();
   const p = await s.prefs.read();
-  assert.equal('repoCacheHours' in p, false, 'clampPrefs 还在补这一格 ⇒ 载荷里躺着一个界面上没有的档位');
-  assert.equal('repoCacheHours' in DEFAULT_PREFS, false, '出厂偏好里还留着它 ⇒ 撤档只撤了界面，链没拆完');
+  assert.equal(p.repoCacheHours, DEFAULT_PREFS.repoCacheHours, '空库读回来该拿到出厂那一档，不是 undefined');
+  assert.ok([6, 12, 24, 72].includes(p.repoCacheHours), '出厂值不在自己认的名单里 ⇒ clampPrefs 会把默认值判成脏');
 
-  // 写路径：patch 的回显吃的是 merged（对**任何**未知键都原样带回，这是既有语义），
-  //   真正入库的那一份过 schema ⇒ 那一格落不进库，下一次 read 就没有它。★ 断的是"存不下来"，不是"不回显"。
+  // 写路径：那一格要真进得了库、读得出来（界面上那排分段器点下去就是这个动作）。
   await s.prefs.patch({ repoCacheHours: 6 });
-  const afterPatch = await s.prefs.read();
-  assert.equal('repoCacheHours' in afterPatch, false, '老键又能被写进库 ⇒ 界面没有它的去处，库里却攒了一份读不出来的历史');
+  assert.equal((await s.prefs.read()).repoCacheHours, 6, '改档落不了库 ⇒ 界面显示成 6 小时，下一问还按出厂档跑');
 
-  // 读路径：老库存里真躺着那一格（第十~二十六轮的用户库就是这么一份）⇒ parse 得过，读出来没有它
-  const legacyRow = { ...DEFAULT_PREFS, repoCacheHours: 6, zzUnknownKey: '留给下一版的垃圾' };
+  // 脏值：只认封闭四档，越界一律回出厂 —— 两处（domain 的 repoCacheTtlMs 与这里的 clampPrefs）算不出第二个答案。
+  for (const bad of [5, 0, 100, 'abc', null]) {
+    await s.prefs.patch({ repoCacheHours: bad });
+    assert.equal((await s.prefs.read()).repoCacheHours, DEFAULT_PREFS.repoCacheHours,
+      `${JSON.stringify(bad)} 没被钳回出厂档 ⇒ 一个自由整数就能把「一次点击最多 4 发」的预算口径改掉`);
+  }
+
+  // 读路径：老库存里**没有**这一格（第十二轮之前那份）⇒ parse 得过、读回来是 24 而不是 undefined。
+  const legacyRow = { intervalMin: 60, topN: 15, keepEvents: 300, proxyMode: 'system', zzUnknownKey: '留给下一版的垃圾' };
   assert.doesNotThrow(() => GHT_DOMAIN.tables.prefs.valueSchema.parse(legacyRow),
-    '老库里多出来的一格挡在 open 里 ⇒ 三榜全红「存储不可用」（第十三轮那把尺子量的是同一个方向）');
+    '缺这一格的上一版库存挡在 open 里 ⇒ 三榜全红「存储不可用」（第十三轮那把尺子量的是同一个方向）');
   s.facility.seed('gh_trending', 'prefs', 'prefs', GHT_DOMAIN.tables.prefs.valueSchema.parse(legacyRow));
   const back = await s.prefs.read();
-  assert.equal('repoCacheHours' in back, false, '未声明的旧键渗进了运行时 ⇒ 客户端会读到一个界面上摆不出来的档位');
+  assert.equal(back.repoCacheHours, DEFAULT_PREFS.repoCacheHours, '库里缺这一格却读回 undefined ⇒ TTL 那一路拿到 NaN，每次点开都出网');
   assert.equal('zzUnknownKey' in back, false);
   assert.equal(back.intervalMin, DEFAULT_PREFS.intervalMin, '丢掉多余键的同时不许把声明键也丢了');
 });

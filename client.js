@@ -803,11 +803,15 @@ window.__ModuleLoader__.load({
               : '还没有记录'));
     }
 
-    /** 设置：可改项 = 间隔 / 条数 / 流水保留 / 语言 / 出网方式 / 现译引擎 + 该档凭据与注册地址 / 现译两档 + 只读运行环境。 */
+    /** 设置：可改项 = 间隔 / 详情缓存时长 / 条数 / 流水保留 / 语言 / 出网方式 / 现译引擎 + 该档凭据与注册地址 / 现译两档 + 只读运行环境。 */
     function SettingsCard({ snap, saving, savedNote, savedErr, onInterval, onSave, language, onLanguage, proxyUrl, onProxyUrl, credDraft, onCred }) {
       const intervals = cfg().intervals || [];
       const labels = cfg().intervalLabels || {};
       const cur = snap?.prefs?.intervalMin;
+      // ★ 详情缓存时长（第十二轮定档、第二十七轮撤、第三十一轮 10-12 用户裁定加回）：档位与中文标签都吃载荷。
+      const cacheHours = cfg().cacheHours || [];
+      const cacheLabels = cfg().cacheHourLabels || {};
+      const curCache = snap?.prefs?.repoCacheHours;
       const range = cfg().topNRange || {};
       const topN = snap?.prefs?.topN;
       const evRange = cfg().keepEventsRange || {};
@@ -886,9 +890,12 @@ window.__ModuleLoader__.load({
             h('span', { className: 'gt-setlabel' }, '检查间隔'),
             h('span', { className: 'gt-seg' }, intervals.map((v) =>
               h('button', { key: v, className: v === cur ? 'on' : '', onClick: () => onInterval(v) }, labels[v] || `${v} 分`)))),
-          // ★ 第二十七轮：这里原来有一行「详情缓存」的四档分段器（第十二轮），已经**整行撤掉**。
-          //   撤的依据不是"没人用"，而是那一档在条件请求之下没有可判的对象：详情现在每次点开都问一次，
-          //   只有 60 秒防连点那一个常数（domain 的 `DETAIL_RECHECK_MS`，按裁定不进设置页，与失败那 5 分钟同一处理）。
+          // 详情缓存时长（第十二轮定档、第二十七轮撤、第三十一轮用户裁定加回）：与检查间隔同形状，档位与中文标签都吃载荷。
+          // ★ 载荷没给 cacheHours（旧宿主）就不摆这一行 —— 一排空按钮比没有更难解释（同出网方式那条判据）。
+          cacheHours.length ? h('div', { className: 'gt-setrow' },
+            h('span', { className: 'gt-setlabel' }, '详情缓存'),
+            h('span', { className: 'gt-seg' }, cacheHours.map((v) =>
+              h('button', { key: v, className: v === curCache ? 'on' : '', disabled: saving, onClick: () => onSave({ repoCacheHours: v }) }, cacheLabels[v] || `${v} 小时`)))) : null,
           h('div', { className: 'gt-setrow' },
             h('span', { className: 'gt-setlabel' }, '榜单条数'),
             stepper('topN', topN ?? range.min, range.min, range.max, 1, `条（${range.min}–${range.max}，超出榜长即显示全榜）`)),
@@ -1102,11 +1109,10 @@ window.__ModuleLoader__.load({
       //   这一次问过 GitHub、正文却没换（304 那条路）才算，所以这一句在界面上永远有出处。
       const stampBody = stampLabels.body && ageText ? `${stampLabels.body} ${ageText}` : '';
       const stampReval = v?.revalidated === true ? (stampLabels.revalidated || '') : '';
-      // ★ 第三十轮第三截：只在**防连点窗口命中**（载荷 `cached` 为真 = 这一屏一发都没发）时摆。
-      //   少了它，"这一次没出网"在界面上没有任何可见结果，而「正文取回于 刚刚」会被读成"又拉了一遍"。
-      //   词仍只从载荷取（含那个秒数，domain 按 `DETAIL_RECHECK_MS` 现拼），客户端不自己写数字、不自己判窗口。
-      const stampWindow = v?.cached === true ? (stampLabels.windowHit || '') : '';
-      const stampText = [stampBody, stampReval, stampWindow].filter(Boolean).join(' · ');
+      // ★ 第三十一轮：第三截（第三十轮那枚「60 秒内没再问 GitHub」）随 60 秒那一档一起撤 ——
+      //   TTL 命中那一屏「正文取回于 20 小时前」**本身就是没出网的证据**，再补一句"没再问"是废话。
+      //   ⚠️ 判"这一问有没有出网"仍然在宿主（`revalidated` 在 `cached` 时恒 false），客户端不自己比时刻。
+      const stampText = [stampBody, stampReval].filter(Boolean).join(' · ');
       const rateLeft = v?.rate?.left;
       // 重置时刻只在「还没到」的时候说：fmtIn 对已过的时刻给「就在下一轮」，那是检查节拍的词，用在配额上是假话
       const resetIn = v?.rate?.resetAt > Date.now() ? fmtIn(v.rate.resetAt, Date.now()) : '';

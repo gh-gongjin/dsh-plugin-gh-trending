@@ -28,6 +28,7 @@ import { createCheckService } from './lib/check.js';
 import {
   BOARDS, BOARD_LABELS, BOARD_ADDED_LABELS, TRENDING_SOURCE_NOTE, LANG_CHECK,
   CHECK_INTERVALS, CHECK_INTERVAL_LABELS, DEFAULT_PREFS,
+  REPO_CACHE_HOURS, REPO_CACHE_HOUR_LABELS, repoCacheTtlMs,
   DETAIL_STAMP_LABELS,
   TOP_N_MIN, TOP_N_MAX, KEEP_EVENTS_MIN, KEEP_EVENTS_MAX, KEEP_EVENTS_STEP,
   EVENT_KIND_LABELS, CROSS_MIN_BOARDS,
@@ -146,6 +147,9 @@ export function apply(ctx, config = {}) {
 
   let prefsView = {
     intervalMin: resolved.intervalMin,
+    // ★ 这一格必须在**初始值**里就有（第三十一轮随档位加回）：`repoService` 的 TTL 按 `prefsView.repoCacheHours` 现取现算，
+    //   而首次 `reloadPrefs()` 是异步的 —— 装配与第一次点击之间读到的该是出厂档，不是 undefined。
+    repoCacheHours: DEFAULT_PREFS.repoCacheHours,
     topN: resolved.topN,
     keepEvents: resolved.keepEvents,
     language: resolved.language,
@@ -177,9 +181,10 @@ export function apply(ctx, config = {}) {
     fetchFn: net.fetch,
     logger: ctx.logger,
     now: () => Date.now(),
-    // ★ 第二十七轮：这里原来有一行 `getTtlMs: () => repoCacheTtlMs(getPrefs().repoCacheHours)`（第十二轮那四档的接线），
-    //   随那一档一起撤掉 —— 详情的节奏现在是「每次点开都带验证器问一次 + 60 秒防连点」，
-    //   那 60 秒是 domain 的 `DETAIL_RECHECK_MS`（用户裁定不进设置页），没有可现取的偏好，也就没有可锁死的数。
+    // ★ 第三十一轮（10-12 用户裁定）加回：TTL **现取现算**（第十二轮那条律）—— 设置页改档之后 `prefsView` 立刻是新值，
+    //   下一发详情就该按新档判新鲜；装配时把毫秒抄死的话，界面上已经显示成新档、真跑的窗口还停在旧值。
+    //   第二十七轮撤这一行是因为那一轮把档位撤了、没有可现取的东西，不是那条律变了。
+    getTtlMs: () => repoCacheTtlMs(getPrefs().repoCacheHours),
     // ★ 第二十一轮（用户裁定「填 GitHub 令牌把配额抬到 5000/h」）：令牌**现取现算** ——
     //   装配时抄进一个字符串的话，"保存了要重启才生效"和"清掉了还在带着发"两种假话都会出现。
     //   ★ 这里只是**读**偏好，不参与拼 URL：令牌的唯一去处是 `repo.js` 那条 `Authorization` 请求头。
@@ -349,9 +354,13 @@ export function apply(ctx, config = {}) {
         crossMin: CROSS_MIN_BOARDS,
         intervals: CHECK_INTERVALS,
         intervalLabels: CHECK_INTERVAL_LABELS,
-        // ★ 第二十七轮：原这里是第十二轮那两行 `cacheHours` / `cacheHourLabels`（详情缓存的四档分段器），随档位一起撤。
-        //   换成详情底部那句落款的**词表**：界面那句「正文取回于 3 天前 · 刚核对过」里客户端只自己算「3 天前」，
+        // ★ 第三十一轮（10-12 用户裁定）加回那两行：设置页那一排的档位与中文标签都从载荷吃
+        //   （客户端不自列档位名单、不自己写「24 小时」那几个字，与上面 `intervals` 同一形状）。
+        cacheHours: REPO_CACHE_HOURS,
+        cacheHourLabels: REPO_CACHE_HOUR_LABELS,
+        // ★ 详情底部那句落款的**词表**：界面那句「正文取回于 3 天前 · 刚核对过」里客户端只自己算「3 天前」，
         //   两个词都从这里来（一份真相：改了文案不必等缓存过期，也不必在客户端搜第二遍字）。
+        //   ★ 第三十一轮：第三截（「60 秒内没再问 GitHub」）随 `DETAIL_RECHECK_MS` 一起撤掉，载荷里这个词表回到两项。
         detailStampLabels: DETAIL_STAMP_LABELS,
         proxyModes: PROXY_MODES,
         proxyModeLabels: PROXY_MODE_LABELS,
