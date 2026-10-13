@@ -41,8 +41,8 @@ import {
   MANUAL_ACTION_LABELS, MANUAL_ACTION_HINTS, MANUAL_GATE_NOTES, MANUAL_RUN_NOTE,
   manualSectionTitle, manualExpandedMeta,
   // ★ 第三十二轮：收藏那一屏的出处枚举、列名与三句话全在 domain（在这里手抄「明星仓库」或「还没有收藏」，改一天就是一片假绿）。
-  FAV_FROM_STARS, FAV_FROM_DETAIL, FAV_FROM_SOURCES, FAV_SORTS, FAV_DEFAULT_SORT, FAV_ON_BOARD_LABELS,
-  FAV_OFF_BOARD_CELL, FAV_COL_STARS, FAV_COL_ON_BOARD, FAV_STAMP_LABELS, FAV_NOTE, FAV_EMPTY_NOTE,
+  FAV_FROM_STARS, FAV_FROM_DETAIL, FAV_FROM_SOURCES, FAV_SORTS, FAV_DEFAULT_SORT,
+  FAV_COL_STARS, FAV_STAMP_LABELS, FAV_NOTE, FAV_EMPTY_NOTE,
   FAV_NO_STORE_NOTE, favFromCell,
 } from '../lib/domain.js';
 import { netView, translatorView, githubView, publicPrefs } from '../lib/api.js';
@@ -268,16 +268,14 @@ function snapFixture(over = {}, starsOver = {}) {
     search: starsOver.search ?? null,
     storageAvailable: starsOver.storageAvailable ?? true,
   });
-  // ★ 第三十二轮：`fav` 那一格排在 `stars` 之后，入参逐条对齐 `lib/api.js` 那次调用（吃**同一帧**算好的那两批行，
-  //   收藏表自己那一份存储位单独喂 —— 与明星那屏的 `seenStore` 位是两个互不相干的判据）。
+  // ★ 第三十二轮：`fav` 那一格的入参逐条对齐 `lib/api.js` 那次调用（收藏表自己那一份存储位单独喂 ——
+  //   与明星那屏的 `seenStore` 位是两个互不相干的判据）。★ 第三十五轮撤掉「这一轮」那一列之后，它不再吃
+  //   榜面那三行与明星那两批行：夹具多喂一格就是替宿主编一种它已经不认的入参（那条死接口有判据钉着，见 favs 套）。
   // ★ 第三十三轮 §8.16 ③：那一份中文的 hits 吃的是**同一趟 `transRows`**（api.js 里 `readTransRows` 一帧只读一次，
   //   榜面与收藏共用同一个值）。夹具要是给收藏另造一份 hits，客户端测的就是夹具编的形状。
   const favRows = starsOver.favRows ?? defaultFavRows();
   const fav = favView({
     favRows,
-    boards,
-    starsRows: stars.rows ?? [],
-    allStarsRows: (starsOver.search ?? null)?.rows ?? [],
     descHits: descZhHits(favRows, transRows).hits,
     storageAvailable: starsOver.favStorageAvailable ?? true,
   });
@@ -2928,7 +2926,7 @@ check('client-72 「已收藏 · 3 天前」那一枚：词逐字吃载荷 cols.
   assert.ok(!clientSrc().includes(FAV_STAMP_LABELS.saved), '客户端源码出现「已收藏」⇒ 同一个词两处出处');
 });
 
-check('client-73 收藏那一屏八列逐列同数：后三列列名与那一句出处整句都逐字吃载荷，缺位吃 missingCell，条数吃 count', () => {
+check('client-73 收藏那一屏七列逐列同数：后两列列名与那一句出处整句都逐字吃载荷，缺位吃 missingCell，条数吃 count', () => {
   const { FavCard } = loadClient().exports.__test.components;
   const snap = snapFixture({}, { favRows: [
     favRow('a/two', { stars: 9, addedAt: atOff(-2 * 86400000) }),
@@ -2941,14 +2939,14 @@ check('client-73 收藏那一屏八列逐列同数：后三列列名与那一句
   const tree = render(FavCard, { snap, onRepo() {}, onFav() {} });
   const tbl = findAllType(tree, 'table')[0];
   assert.ok(tbl, '表没摆出来，判据空转');
-  assert.equal(kidsOf(kidsOf(tbl, 'colgroup')[0], 'col').length, 8, '八列的列模板');
+  assert.equal(kidsOf(kidsOf(tbl, 'colgroup')[0], 'col').length, 7, '七列的列模板');
   const ths = cellsOf(tbl, 'thead');
-  assert.equal(ths.length, 8);
-  assert.deepEqual(ths.map(text), ['#', '仓库', '描述', '语言', snap.fav.cols.stars, snap.fav.cols.column, snap.fav.cols.onBoard, '★'],
-    '后三列列名逐字吃载荷那一份（用例不抄 domain 文本）');
+  assert.equal(ths.length, 7);
+  assert.deepEqual(ths.map(text), ['#', '仓库', '描述', '语言', snap.fav.cols.stars, snap.fav.cols.column, '★'],
+    '后两列列名逐字吃载荷那一份（用例不抄 domain 文本）');
   const trs = favTrs(tree);
-  assert.deepEqual(trs.map((tr) => kidsOf(tr, 'td').length), [8, 8], '每一行都要有八个 td，少一列就整表错位');
-  assert.deepEqual(ths.map((t) => hasCls(t, 'gt-tail')), [false, false, false, false, false, false, false, true], '尾列的表头带 gt-tail（那 36px 归 CSS 打在这一列）');
+  assert.deepEqual(trs.map((tr) => kidsOf(tr, 'td').length), [7, 7], '每一行都要有七个 td，少一列就整表错位');
+  assert.deepEqual(ths.map((t) => hasCls(t, 'gt-tail')), [false, false, false, false, false, false, true], '尾列的表头带 gt-tail（那 36px 归 CSS 打在这一列）');
   // 行序吃宿主那一份恒定序（addedAt 倒序 ⇒ a/gap 在前），没点分段器时界面不自己重排
   assert.deepEqual(trs.map((tr) => text(findAllType(tr, 'a')[0])), ['a/gap', 'a/two']);
   const cells = (repo) => kidsOf(trs.find((tr) => text(findAllType(tr, 'a')[0]) === repo), 'td');
@@ -2957,17 +2955,17 @@ check('client-73 收藏那一屏八列逐列同数：后三列列名与那一句
   assert.equal(text(gap[3]), snap.fav.missingCell, '语言缺位同上，且不摆那个色点');
   assert.equal(findAllType(gap[3], 'i').length, 0, '没有色值就不摆那个点');
   assert.equal(text(gap[4]), snap.fav.missingCell, '那一刻没有星数 ⇒ 念缺位，不是念 0（0 是"真的是 0"）');
-  assert.equal(hasCls(gap[6], 'gt-flat'), true, '没命中的那一格置灰，不藏格（与明星屏同一条读法）');
-  assert.equal(text(gap[6]), snap.fav.offBoardCell, '「这一轮」那一格是宿主比出来的成品句');
+  // ★ 第三十五轮撤掉「这一轮」那一列之后，尾列紧跟「收藏于」：那一枚 ★（在这一屏是「移出」）不跟着列一起被撤
+  assert.equal(findByClass(gap[6], 'gt-fav').length, 1, '缺位那一行的尾列照样摆那一枚：撤一列不许把取消收藏的入口带走');
   const two = cells('a/two');
   assert.equal(text(two[4]), '9', '有值那一格走 fmtCount');
   assert.equal(text(two[5]), '2 天前', '「收藏于」那一格 = fmtAge(addedAt, snap.at)');
-  assert.equal(text(two[6]), FAV_ON_BOARD_LABELS.daily, '在榜那一档念宿主给的成品句（日 > 周 > 月 > 明星 的优先级在宿主判）');
+  assert.equal(findByClass(two[6], 'gt-fav').length, 1, '尾列仍是最后一格，位置跟着前一列左移');
   assert.equal(findByClass(two[1], 'gt-tag').map(text)[0], favFromCell(BOARD_LABELS.daily), '出处那一格整句搬运');
-  // 列名从载荷来：换哨兵词屏上跟着换（写死「这一轮」就当场红）
-  const sentCols = { ...snap, fav: { ...snap.fav, cols: { stars: 'S-星', column: 'S-刻', onBoard: 'S-轮' } } };
+  // 列名从载荷来：换哨兵词屏上跟着换（写死那两列名就当场红）
+  const sentCols = { ...snap, fav: { ...snap.fav, cols: { stars: 'S-星', column: 'S-刻' } } };
   const ths2 = cellsOf(findAllType(render(FavCard, { snap: sentCols, onRepo() {}, onFav() {} }), 'table')[0], 'thead');
-  assert.deepEqual(ths2.slice(4, 7).map(text), ['S-星', 'S-刻', 'S-轮']);
+  assert.deepEqual(ths2.slice(4, 6).map(text), ['S-星', 'S-刻']);
   // 条数吃 count（客户端不数行）：把 count 换成 7，卡头念 7 条而表里还是两行 ⇒ 证明那一句不是 rows.length 现数
   const sentCount = { ...snap, fav: { ...snap.fav, count: 7 } };
   assert.equal(text(findByClass(render(FavCard, { snap: sentCount, onRepo() {}, onFav() {} }), 'gt-card-n')[0]), '7 条');
@@ -2975,7 +2973,7 @@ check('client-73 收藏那一屏八列逐列同数：后三列列名与那一句
   const src = clientSrc();
   assert.ok(!src.includes('来自'), '客户端把 from 和「来自」接起来 = 第二份出处句子');
   assert.ok(!src.includes(FAV_COL_STARS) && !src.includes('（那一刻）'), '累计 ★ 那一列的话术只有一个出处');
-  assert.ok(!src.includes(FAV_OFF_BOARD_CELL), '「未上榜」不许写在客户端');
+  assert.ok(!src.includes('onBoard') && !src.includes('未上榜'), '「这一轮」那一列撤干净：客户端既不留那个标识符，也不把缺位那句抄回源码');
 });
 
 check('client-74 收藏那一屏的"没内容"分三档说话：等待首帧 / 存储不可用 / 一行都没收藏，各念各的句子且不摆不该摆的东西', () => {
@@ -3179,7 +3177,7 @@ check('client-78 ★ 收藏那一格摆的是本机已有的那一份中文，�
   // ① 内置那一路：中文上屏，悬停三行「原文 / 那一行自己的落款 / 那句说明」
   const bSpan = cell(DESC_ZH_ROWS[0][0]);
   assert.equal(text(bSpan), DESC_ZH_ROWS[0][2], '★ 本轮的那一根线：收藏那一屏读得到盘上早就躺着的这一句中文');
-  assert.ok(bSpan.props.title.includes(`原文：${DESC_ZH_ROWS[0][1]}`), '中文上了屏，原文也必须还看得见（第 11 格不覆盖 desc 就是为了这一行）');
+  assert.ok(bSpan.props.title.includes(`原文：${DESC_ZH_ROWS[0][1]}`), '中文上了屏，原文也必须还看得见（`descZh` 不覆盖 `desc` 就是为了这一行）');
   assert.ok(bSpan.props.title.includes(DESC_ZH_LABEL) && bSpan.props.title.includes(DESC_ZH_NOTE), '内置那一路念内置那两句');
   assert.equal(bSpan.props.title.includes(DESC_ZH_LIVE_NOTE), false, '两种来源的说明句不许同时挂在一行上');
   // ② 现译那一路：落款跟着**库里那一行**的档名与时刻（不是"这一帧选的是宿主模型档"）

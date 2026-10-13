@@ -2174,8 +2174,6 @@ check('favSeedOf 切片吃 prefs.topN：屏上只有那几行 ⇒ 榜上第 30 �
   const off = await h.__stores.fav.get('a/9');
   assert.equal(off.from, FAV_FROM_DETAIL, '第 10 行不在屏上：拿整表去找会把"没看见"念成出处');
   assert.equal(off.stars, undefined, '切片外的读数一格都不许带进来');
-  const snap = (await call(h, get('/api/snapshot'))).res.json().data;
-  assert.equal(snap.fav.rows.find((r) => r.repo === 'a/9').onBoard, snap.fav.offBoardCell, '快照里那一格也跟着念未上榜（同一帧只判一处）');
 });
 
 check('★ 四路都没有 ⇒ 出处落「详情」，那一行只有 repo / addedAt / from 三格有值：屏上是 — 是实话，不是缺格', async () => {
@@ -2297,7 +2295,7 @@ check('★ 一帧只读译文表**一次**：榜面那份 hits 与收藏那份 h
   assert.ok(Array.isArray(await trans.entries()), '自证：包装位没把 entries() 的返回值改掉（判据不能红在替身上）');
 });
 
-check('★ 内置与现译两路：同一仓库同一原文 ⇒ 榜面 hits 与收藏第 11 格逐字同，而 `desc` 仍是原文（§8.16 ①②）', async () => {
+check('★ 内置与现译两路：同一仓库同一原文 ⇒ 榜面 hits 与收藏那一格逐字同，而 `desc` 仍是原文（§8.16 ①②）', async () => {
   const [bKey, bSrc, bZh] = DESC_ZH_ROWS[0];
   const lKey = 'l/only-on-board';
   const lSrc = 'A line worth translating once';
@@ -2333,11 +2331,11 @@ check('★ 收藏里躺着一个从没译过的仓库 ⇒ 一发都不多派：�
   // ★ 这一格查的是**序列化之后**的形状：写成 `undefined` 时内存对象里键还在，JSON 一过就被丢掉，
   //   客户端读到的形状于是随数据变（`descCell` 那一条链看不出差别，只有载荷的键表能看出）。
   assert.ok(Object.prototype.hasOwnProperty.call(before.fav.rows[0], 'descZh'),
-    '第 11 格在序列化后的那一行上没了键 ⇒ 界面对"没中文"与"宿主没送到"分不开');
+    '`descZh` 那一格在序列化后的那一行上没了键 ⇒ 界面对"没中文"与"宿主没送到"分不开');
   // ★ 走**序列化之后**的那一份：`descZh: undefined` 在内存对象里键还在，JSON 一过就被丢掉，
   //   客户端读到的形状于是随数据变（这正是 `strictEqual` 那一形管不到的那一半）。
   assert.ok(Object.prototype.hasOwnProperty.call(JSON.parse(JSON.stringify(before.fav.rows[0])), 'descZh'),
-    '第 11 格没命中时必须写成 null：undefined 会被序列化吃掉，界面上"没这一格"和"这一格没中文"就成了两件事');
+    '`descZh` 那一格没命中时必须写成 null：undefined 会被序列化吃掉，界面上"没这一格"和"这一格没中文"就成了两件事');
   assert.equal(before.fav.rows[0].desc, 'A line kept only inside favs', '★ 前提：那一行真在库里、真读得出来（否则这条判据在空表上绿灯）');
   assert.equal(llm.jobs.length, 0, '读路径零发：打开收藏那一屏也不派');
 

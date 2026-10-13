@@ -841,7 +841,7 @@ window.__ModuleLoader__.load({
     }
 
     /**
-     * 收藏那一屏（第三十二轮 §8.15 ②）：七列 `# / 仓库 / 描述 / 语言 / 累计 ★ / 收藏于 / 这一轮`，末尾那一列是那一枚 ★（在这一屏它是「移出」）。
+     * 收藏那一屏（第三十二轮 §8.15 ②）：六列 `# / 仓库 / 描述 / 语言 / 累计 ★ / 收藏于`，末尾那一列是那一枚 ★（在这一屏它是「移出」）。
      * ★ 列名、句子、档位名单、缺位符**一律吃载荷** `snap.fav`：客户端不数条、不拼句、不自列档位（§8 一份真相）。
      * ★ 渲染期零请求（§8.15 ③）：行里那几格恒是收藏那一刻存的快照，要新值点仓库名走详情那条链。
      */
@@ -863,9 +863,9 @@ window.__ModuleLoader__.load({
       const noStore = f.available !== true ? h('div', { className: 'gt-notice gt-notice-err' }, f.noStoreNote) : null;
       const rows = favPick(f.rows, sort);
       const colProps = [{ style: { width: 34 } }, { className: 'gt-col-repo' }, { className: 'gt-col-desc' },
-        { style: { width: 112 } }, { style: { width: 88 } }, { style: { width: 78 } }, { style: { width: 70 } }, { className: 'gt-tail' }];
+        { style: { width: 112 } }, { style: { width: 88 } }, { style: { width: 78 } }, { className: 'gt-tail' }];
       const headCells = [['gt-r', '#'], ['', '仓库'], ['', '描述'], ['', '语言'],
-        ['gt-r', cols.stars], ['gt-r', cols.column], ['gt-r', cols.onBoard], ['gt-tail', '★']];
+        ['gt-r', cols.stars], ['gt-r', cols.column], ['gt-tail', '★']];
       return h('section', { className: 'gt-card' },
         h('div', { className: 'gt-card-h' },
           h('span', { className: 'gt-card-t' }, '收藏'),
@@ -887,7 +887,7 @@ window.__ModuleLoader__.load({
                     h('a', { className: 'gt-repo', ...repoLinkProps(r.repo, onRepo) }, r.name || r.repo),
                     // ★ 吃宿主拼好的整句 `fromCell`：这里接「来自 + 榜名」就是第二份榜名（§8 一份真相）
                     r.fromCell ? h('span', { className: 'gt-tag' }, r.fromCell) : null),
-                  // ★ 第 11 格 `r.descZh`（§8.16 ②）：宿主比过原文才送过来，这里只摆字不判档
+                  // ★ `r.descZh` 那一格（§8.16 ②）：宿主比过原文才送过来，这里只摆字不判档
                   descCell(r.desc, r.descZh, missing),
                   // 语言点是收藏那一刻存的那一份（这一屏不刷新读数），库里没带色值就吃 CSS 那一份灰
                   h('td', null, r.lang
@@ -895,8 +895,6 @@ window.__ModuleLoader__.load({
                     : h('span', { className: 'gt-flat' }, missing)),
                   h('td', { className: 'gt-r gt-num' }, Number.isFinite(r.stars) ? fmtCount(r.stars) : missing),
                   h('td', { className: 'gt-r gt-num' }, fmtAge(r.addedAt, snap?.at)),
-                  // 「这一轮」是宿主本地比出来的成品句（§8.15 ⑥）；没命中的那一档置灰，与明星屏同一条读法
-                  h('td', { className: `gt-r${r.onBoard === f.offBoardCell ? ' gt-flat' : ''}` }, r.onBoard),
                   h('td', { className: 'gt-tail' }, h(FavStar, { repo: r.repo, on: true, onToggle: onFav })))))))
             // 「读不到那张表」与「一行都还没收藏」是两件事：存储位不真时那一句故障话已经在卡体里念过了，
             // 再补一句「还没有收藏」就是两句互相拆台（宿主那一路此时恒给零行，缺这一道闸就两句同时摆出来）。

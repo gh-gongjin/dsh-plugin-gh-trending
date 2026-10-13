@@ -812,4 +812,63 @@ check('hc-23 ★「这句中文该不该上屏」只有一处判据（第三十�
   assert.equal(/\.src\s*===|===\s*hit\.src/.test(codeOf('client.js')), false, '客户端比原文 ⇒ 第三份判据');
 });
 
+/**
+ * 第三十五轮撤掉「这一轮」那一列之后的合成样本：那四个名字 + 那两个标识符 + 那句缺位话，一样不缺。
+ * ★ 扫描面必须先能扫到东西：这四条正则若连这一坨都测不出 true，"三处都没有"是给空气立的牌坊（hc-23 同一条律）。
+ */
+const SYNTHETIC_ON_BOARD_CELL = `
+export const FAV_ON_BOARD_LABELS = { daily: '在日榜' };
+export const FAV_OFF_BOARD_CELL = '未上榜';
+export const FAV_ON_BOARD_PRIORITY = ['daily'];
+export const FAV_COL_ON_BOARD = '这一轮';
+const indexes = { daily: keysOf(boards?.daily?.rows) };
+row.onBoard = onBoardCellOf(key, indexes);
+h('td', null, r.onBoard === f.offBoardCell ? '未上榜' : r.onBoard)
+const revived = favView({
+  favRows: favRead.rows,
+  boards: boards,
+  starsRows: stars.rows,
+  allStarsRows: search?.rows,
+  descHits: favZh.hits,
+});
+`;
+
+check('hc-24 ★「这一轮」那一列撤得干净（第三十五轮）：那四个名字零出处、宿主不再吃榜面那三行、客户端连那句缺位话都不认', () => {
+  // ① 四份源逐处扫：domain 那份名单、favs 那次比对、api 那三格入参、client 那一格摆字 —— 一处复辟就红。
+  const BANNED = [
+    ['lib/domain.js', [/FAV_ON_BOARD_LABELS/, /FAV_OFF_BOARD_CELL/, /FAV_ON_BOARD_PRIORITY/, /FAV_COL_ON_BOARD/]],
+    ['lib/favs.js', [/onBoard/, /ON_BOARD/, /OFF_BOARD/]],
+    ['client.js', [/onBoard/, /offBoardCell/, /未上榜/]],
+  ];
+  for (const [rel, list] of BANNED) {
+    const code = codeOf(rel);
+    for (const re of list) {
+      assert.ok(re.test(SYNTHETIC_ON_BOARD_CELL), `${rel} 的扫描面里有一条正则连合成样本都扫不到（等于给复辟开了张不查的通行证）`);
+      assert.equal(re.test(code), false, `${rel} 里还留着「${re}」那一形 ⇒ 那一列撤了一半（留着的字面就是第二份出处）`);
+    }
+  }
+  // ② 装配点那次调用只喂三格（**从真调用点往后读**，不是整段抠到一个 `})` 就停：调用里嵌着 `descZhHits(...)` 那种带括号的一行，
+  //    锚点停在第一个 `})` 就把后半截喂料读丢了 —— 第一跑就栽在这儿，报出来的入参名单只剩两格）。
+  const apiSrc = codeOf('lib/api.js');
+  const at = apiSrc.indexOf('favView({');
+  assert.ok(at >= 0, 'lib/api.js 里读不到 favView 的调用点 ⇒ 下面那条入参名单是在空气上绿灯');
+  assert.equal((apiSrc.match(/favView\(\{/g) || []).length, 1, 'favView 的调用点应当只有一处，多出来那一处就是第二份装配');
+  const body = apiSrc.slice(at + 'favView({'.length, apiSrc.indexOf('})', at));
+  assert.ok(body.includes('favRows:') && body.includes('storageAvailable:'),
+    '从调用点抠出的那段没有读到调用真正结束的位置 ⇒ 入参名单会少报（判据不能红在读半截）');
+  const fedKeys = [...body.matchAll(/^\s*(\w+)\s*:/gm)].map((m) => m[1]);
+  assert.deepEqual(fedKeys.sort(), ['descHits', 'favRows', 'storageAvailable'],
+    '那次调用多喂一格（榜面三行 / 明星两批）就是撤列之后留下的死接口：宿主白算一遍屏上也长不出那一格');
+  // ★ 键表只认 `k:` 那一形，简写喂料（`boards,`）它读不出来 ⇒ 那三个名字以**词**的形状再兜一遍
+  for (const dead of ['boards', 'starsRows', 'allStarsRows']) {
+    assert.equal(new RegExp(`\\b${dead}\\b`).test(body), false,
+      `那次调用里还出现「${dead}」⇒ 撤列之后宿主仍替这一屏算一遍榜况（简写那一形键表扫不到，这里补上）`);
+  }
+  // ③ 反面自证：② 那条键表扫的形状在合成样本上扫得到（把复辟那三格喂进去，名单就该多出它们 ⇒ 扫描不是空转）
+  const synthKeys = [...SYNTHETIC_ON_BOARD_CELL.matchAll(/^\s*(\w+)\s*:/gm)].map((m) => m[1]);
+  for (const k of ['boards', 'starsRows', 'allStarsRows']) {
+    assert.ok(synthKeys.includes(k), `合成样本里的「${k}:」那一格扫不出来 ⇒ ② 那条键表扫描是空转，复辟喂料拦不住`);
+  }
+});
+
 await runAll('host-compat');
