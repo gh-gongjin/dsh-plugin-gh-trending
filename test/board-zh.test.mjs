@@ -11,7 +11,7 @@
  */
 import { check, runAll, assert } from './_helpers.mjs';
 import {
-  descZhView, visibleBoardRows, allVisibleRows, descZhRows, boardDescHeadText, boardDescZhHead,
+  descZhView, descZhHits, visibleBoardRows, allVisibleRows, descZhRows, boardDescHeadText, boardDescZhHead,
   createBoardZhRunner, BOARD_DESC_ZH_VIAS,
 } from '../lib/board-zh.js';
 import { descZhFor, DESC_ZH_ROWS, DESC_ZH_LABEL, DESC_ZH_NOTE } from '../lib/desc-zh.js';
@@ -132,6 +132,46 @@ check('★ boardMissing 只数榜面那组：三榜一行不欠、只有那一�
   assert.equal(v.hits[repo].zh, zh, '前提：榜面那一行由内置预译压中，榜面这会儿不欠一句');
   assert.equal(v.missing, 1, '那一档欠一句（参与集合的总欠账要如实数着，todo 就是从它来的）');
   assert.equal(v.boardMissing, 0, '★ 榜面一句都不欠 ⇒ 「榜面这一列只显内置预译」那句此刻是假话，判据不能吃 missing');
+});
+
+check('★ descZhHits 是命中判据的唯一出处：与 descZhView 的 hits / counts 逐字同，且它只给命中不派活（第三十三轮 §8.16 ①）', () => {
+  const [repo, src, zh] = B0;
+  const rows = [
+    crow(repo, 1, src),                              // 内置表里真那一条 ⇒ builtin
+    crow('m/one', 2, 'An english description'),      // 库里逐字命中 ⇒ live
+    crow('M/One', 3, 'An english description'),      // ★ 同一仓库换大小写：归一之后只算第一次命中
+    crow('Up/One', 5, 'Another stored line'),        // ★ 屏上只有大写形、库里存的是小写键 ⇒ 靠**行侧**归一才命中
+    crow('p/none', 4, 'Nothing on this one'),        // 两种来源都没有 ⇒ 不进 hits
+  ];
+  // 库里那一行的 repo 也故意写成大写：判据两头都归一，收藏喂的是库里的原始行，榜面喂的是切片行
+  const stored = [
+    { repo: 'M/One', kind: 'desc', src: transSrcKey('An english description'), zh: '库里那一份', at: 99, engine: 'keyless' },
+    { repo: 'up/one', kind: 'desc', src: transSrcKey('Another stored line'), zh: '大写行的那一份', at: 98, engine: 'keyless' },
+  ];
+  const only = descZhHits(rows, stored);
+  const view = descZhView(rows, stored, { nowMs: 7777 });
+  assert.deepEqual(only.hits, view.hits, '★ 抽函数前后不许漂：榜面读 view 那一份、收藏读这一份，两份判据一漂移屏上就有半屏假话');
+  assert.deepEqual(only.counts, view.counts);
+  assert.deepEqual(Object.keys(only).sort(), ['counts', 'hits'], '这一格只给命中：把 todo / missing 也带出来，收藏那一屏就变成会花钱的屏');
+  assert.deepEqual(only.counts, { builtin: 1, live: 2 }, 'p/none 一行都不欠这一格的账');
+  assert.equal(only.hits[repo].zh, zh);
+  assert.equal(only.hits['m/one'].zh, '库里那一份', '归一后 M/One 与 m/one 是同一行（第一次出现赢，第二次不再覆盖）');
+  assert.equal(only.hits['up/one'].zh, '大写行的那一份',
+    '★ 屏上只有大写形时靠**行侧**归一命中：撤掉这一半，收藏/榜面就整屏念原文，而那台机器上明明译过');
+  assert.equal(only.hits['Up/One'], undefined, 'hits 的键恒是小写主键：客户端与装配侧都按小写查，多一只大写键就是第二把尺');
+  assert.equal(only.hits['p/none'], undefined);
+  // 内置优先：同仓库两种来源都在场时念内置那一份（第八轮那条裁定在这一层同样成立）
+  const both = descZhHits([crow(repo, 1, src)], [{ repo, kind: 'desc', src: transSrcKey(src), zh: '模型重译的那一句', at: 7, engine: 'keyless' }]);
+  assert.equal(both.hits[repo].via, 'builtin');
+  assert.deepEqual(both.counts, { builtin: 1, live: 0 });
+  // 脏输入不给半个对象：kind 不是 desc / zh 空串 / repo 缺位 ⇒ 那一行不命中（收藏的行来自库里，脏形照样喂得进来）
+  const dirty = descZhHits([crow('d/one', 1, 'Plain line')], [
+    { repo: 'd/one', kind: 'readme', src: transSrcKey('Plain line'), zh: '那是 readme 的中文', at: 1, engine: 'keyless' },
+    { repo: 'd/one', kind: 'desc', src: transSrcKey('Plain line'), zh: '', at: 1, engine: 'keyless' },
+    null, { noRepo: 1 },
+  ]);
+  assert.deepEqual(dirty, { hits: {}, counts: { builtin: 0, live: 0 } }, 'kind 认错或 zh 空串时挂上去就是一只有中文没有出处的格子');
+  assert.deepEqual(descZhHits([], []), { hits: {}, counts: { builtin: 0, live: 0 } }, '空表也给满形状：载荷的键不许随数据变');
 });
 
 check('descZhView：内置表优先压过库里的现译行（第八轮那句「B 优先」原样成立）', () => {

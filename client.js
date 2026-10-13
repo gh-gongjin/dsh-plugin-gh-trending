@@ -11,7 +11,7 @@
 // 不自动弹提示层：错误与状态一律就地落卡（.gt-notice）。
 // 唯一的浮层是**用户自己点出来的**仓库详情对话框（点仓库名 → 中文解释），它不自动出现、不抢焦点以外的东西。
 //
-// 页签：总览 / 日榜 / 周榜 / 月榜 / 明星仓库 / 变化记录 / 设置（与 modelwatch 同形：一屏一件事，
+// 页签：总览 / 日榜 / 周榜 / 月榜 / 明星仓库 / 收藏 / 变化记录 / 设置（与 modelwatch 同形：一屏一件事，
 // 段与段不再靠一路滚；三档榜从「卡内分段器」升成「三个页签」，卡内不再套一层切换；
 // 明星那一屏（第二十三轮）的原料全在载荷 `stars` 那一格里 ⇒ 打开这一签不出网，换档与排序都只是本地重排）。
 //    CSS 模板串里注释与选择器都不许出现反引号。
@@ -59,6 +59,9 @@ window.__ModuleLoader__.load({
   --gt-hover:var(--dsw-alias-bg-layer-3,#f0f0f1);
   --gt-line:var(--dsw-alias-border-l1,#ebebed);--gt-line2:var(--dsw-alias-border-l2,#e0e0e3);
   --gt-ok:#1f883d;--gt-err:#c0392b;--gt-warn:#9a6700;--gt-info:var(--dsw-alias-state-business-primary,#3d6fe0);
+  /* 收藏那枚 ☆/★ 的金色（第三十二轮 §8.15）：宿主令牌表里没有"收藏"这一档语义色，
+     照 --gt-ok/--gt-err 的先例在本插件自己这一层给死值，不动宿主色板。 */
+  --gt-star:#a8760a;
   box-sizing:border-box;color:var(--gt-fg);background:transparent;padding:0 20px 28px;
   width:100%;flex:1;min-height:0;overflow:hidden;
   display:flex;flex-direction:column;gap:12px;font-size:13px;line-height:1.5}
@@ -115,7 +118,17 @@ window.__ModuleLoader__.load({
      注意这段在模板字符串里：反引号会把 CSS 截断，注释里别写。 */
 .gt-tbl col.gt-col-repo{width:268px}
 .gt-tbl col.gt-col-desc{width:auto}
-.gt-tbl col.gt-tail,.gt-tbl th.gt-tail,.gt-tbl td.gt-tail{width:0;padding:0}
+/* 尾列：第三十二轮之前是 width:0（纯粹兜余量的占位列），现在摆那一枚收藏按钮 ⇒ 拿 36px（spec §8.15 ①「描述列少约 34px」那条代价）。
+   ★ 三条宽度/内距的账要一起算：td 带 overflow:hidden（宽一点点的溢出会被裁掉而不是撑开），
+     按钮按 border-box 算 28px ⇒ 内容档至少 28px，本列 36 − 左右内距 8 = 28 刚好；
+   ★ 内距必须本条自己写：last-child 那条 14px 右内距与它同特异度，本条在后面才顶得住。 */
+.gt-tbl col.gt-tail,.gt-tbl th.gt-tail,.gt-tbl td.gt-tail{width:36px;padding:6px 4px;text-align:center}
+/* 收藏那枚 ☆/★：三处入口（三榜行尾 / 明星行尾 / 详情弹框头部）共用这一个类，亮灭只看 .on 一个位。
+   ★ 点它只改收藏 —— 不跳转、不开弹框、不滚动（§7 那条「选择无副作用」），榜面那枚还必须拦掉冒泡。 */
+.gt-fav{width:28px;height:22px;padding:0;line-height:1;border:1px solid var(--gt-line2);border-radius:6px;
+  background:var(--gt-card);color:var(--gt-faint);font-size:13px;cursor:pointer;font-family:inherit}
+.gt-fav:hover{border-color:var(--gt-star);color:var(--gt-star);background:#fffaec}
+.gt-fav.on{color:var(--gt-star);border-color:var(--gt-star);background:#fffaec}
 @media (max-width:1000px){.gt-tbl col.gt-col-repo{width:auto}.gt-tbl col.gt-col-desc{width:160px}}
 .gt-tbl td{padding:6px 8px;border-bottom:1px solid var(--gt-line);vertical-align:middle;
   overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
@@ -254,8 +267,10 @@ window.__ModuleLoader__.load({
 .gt-modal-x:hover{color:var(--gt-fg);background:var(--gt-hover)}
 .gt-modal-b{padding:12px 14px;display:flex;flex-direction:column;gap:10px;min-width:0}
 .gt-modal-h2{display:flex;align-items:center;gap:8px;flex-wrap:wrap;font-size:11px;font-weight:600;color:var(--gt-muted);letter-spacing:.3px}
-/* 详情段名行右侧那三枚（第二十八轮）：只有一条规则，段名与按钮的排布靠上面那条 flex */
-.gt-acts{margin-left:auto;display:flex;align-items:center;gap:6px;flex-wrap:wrap}
+/* 详情段名行右侧那三枚（第二十八轮）：只有一条规则，段名与按钮的排布靠上面那条 flex。
+   ★ 头部那一组（第三十二轮：收藏那枚与 ×）共用这一份布局，但**类名另起**：
+     client-64 钉的是「手动那三枚全树只许一排」，两组同名会让那条判据数到头部那一排而失去牙。 */
+.gt-acts,.gt-modal-acts{margin-left:auto;display:flex;align-items:center;gap:6px;flex-wrap:wrap}
 /* 段名与它的正文是一组：块级 div 之间没有 gap，两组会挤成一坨（真机截图抓到） */
 .gt-modal-sec{display:flex;flex-direction:column;gap:6px;min-width:0}
 .gt-modal-p{margin:0;line-height:1.65;overflow-wrap:anywhere}
@@ -333,6 +348,18 @@ window.__ModuleLoader__.load({
       return { text: '+0', cls: 'gt-flat' };
     }
     /**
+     * 描述那一格：中文优先 → 原文 → 缺位符，悬停三行「原文 / 来源标签 / 那句说明」。
+     * ★ 第三十三轮 §8.16 ④：榜面、明星、收藏三屏共用这一条规则（此前它已经逐字抄了两遍，收藏是第三个用户）。
+     * ⚠️ 命中判据**不在屏上** —— `hit` 是宿主 `descZhHits` 喂进来的那一份（逐字对得上才有），这里只搬字不判档；
+     *   悬停看得到**原文与这一行自己的**来源：两种中文（内置预译 / 现译）说的不是一件事，拿卡头那一句套每一行就串了。
+     */
+    function descCell(desc, hit, missing) {
+      return h('td', null, h('span', {
+        className: 'gt-desc',
+        title: hit ? `原文：${desc}\n${hit.label}\n${hit.note}` : (desc || ''),
+      }, hit?.zh || desc || missing));
+    }
+    /**
      * 明星那一屏在**已到手**的那批里筛与重排（§7.7：换档与排序都是本地动作 —— 不发请求、不写 prefs、不触发检查）。
      * ★ 载荷恒按 `stars` 降序预先排好（宿主那份 `sorts` 只是名单，行序不在这里再问一次）；
      *   缺位的读数（回落行的 `stars`、不在日榜的 `added`）按 `-1` 参与比较 ⇒ 垫底，与 `0` 分开。
@@ -348,6 +375,50 @@ window.__ModuleLoader__.load({
         return (b.stars ?? -1) - (a.stars ?? -1);
       });
     }
+    /**
+     * 收藏那一屏的展示序（§8.15 ⑤）：宿主只给**恒定的一种**（`addedAt` 倒序），重排全在这里 ——
+     * 与 `starsPick` 同一条律：本地动作，不发请求、不写 prefs、不回写库里那一行。
+     * ★ 缺位的星数（四路都没命中那行的 `stars=null`）按 `-1` 参与比较 ⇒ 垫底，与「真是 0 星」分开（同 `addedCell` 那条）。
+     */
+    function favPick(rows, sort) {
+      const list = [...(rows || [])];
+      if (sort === 'stars') return list.sort((a, b) => (b.stars ?? -1) - (a.stars ?? -1) || String(a.repo).localeCompare(String(b.repo)));
+      if (sort === 'name') {
+        return list.sort((a, b) => String(a.name || a.repo).localeCompare(String(b.name || b.repo)) || String(a.repo).localeCompare(String(b.repo)));
+      }
+      return list;
+    }
+    /** 载荷 `fav.rows` → 查表（那一枚 ☆/★ 的亮与灭只认这一个源，同 §8.15 ①「同一个状态源」）。 */
+    function favMapOf(snap) {
+      const map = new Map();
+      for (const r of (snap?.fav?.rows || [])) {
+        const k = String(r?.repo ?? '').trim().toLowerCase();
+        if (k) map.set(k, r);
+      }
+      return map;
+    }
+    /** 「已收藏 · 3 天前」那一句：**词**吃载荷 `fav.cols.saved`，相对时刻由浏览器算（`detailStampLabels` 同一条分法）。 */
+    function favSavedText(hit, cols, nowMs) {
+      const word = cols?.saved || '';
+      if (!hit || !word) return '';
+      return `${word} · ${fmtAge(hit.addedAt, nowMs)}`;
+    }
+    /**
+     * 那一枚 ☆/★（第三十二轮）：三处入口共用同一个组件 ⇒ 状态、拦冒泡、发哪一发只有一处定义。
+     * ★ `stopPropagation` 是必需的：榜面那一行的仓库名整块可点（开详情），点星只改收藏、不许顺手开弹框（§7 选择无副作用）。
+     * ★ 组件自己不改状态：`on` 恒来自快照，点完等宿主追帧（`POST /api/fav` 的回执 + `update` 帧）把它刷成新的。
+     */
+    function FavStar({ repo, on, onToggle }) {
+      return h('button', {
+        className: `gt-fav${on ? ' on' : ''}`,
+        title: on ? '移出收藏' : '收藏',
+        onClick: (e) => {
+          if (e && typeof e.stopPropagation === 'function') e.stopPropagation();
+          onToggle(repo, on ? 'remove' : 'add');
+        },
+      }, on ? '★' : '☆');
+    }
+
     /**
      * 仓库名的链接属性：href 保留是给中键 / 右键「新标签页打开」留的活路，
      * 只有普通左键才拦下来去弹详情（带任一修饰键、或非左键一律交给浏览器）。
@@ -585,11 +656,15 @@ window.__ModuleLoader__.load({
     }
 
     /** 榜单表：一榜一页签，卡内不再套一层分段器（页签本身就是切换器）。 */
-    function BoardCard({ snap, board, onRepo }) {
+    function BoardCard({ snap, board, onRepo, onFav }) {
       const b = snap?.boards?.[board] || { rows: [], rowsTotal: 0, ok: false, error: '还没跑过第一轮检查' };
       const rows = b.rows || [];
       const addedLabel = (cfg().boardAddedLabels || {})[board] || '新增';
       const stale = !b.ok && rows.length > 0;
+      // 收藏那一枚的亮/灭与「已收藏 · 3 天前」那句：源只有载荷 `fav.rows` 这一份（§8.15 ①）。
+      const favMap = favMapOf(snap);
+      const favCols = snap?.fav?.cols || {};
+      const favOf = (repo) => favMap.get(String(repo ?? '').trim().toLowerCase());
       // 描述列的中文：宿主把两种来源（内置预译 / 每轮检查后补的现译）算好并排给到，
       // 这一半边只取值 —— 不判原文、不数条数、不拼句子（客户端不编日期，也不替额度做决定）。
       const zh = snap?.descZh || { hits: {}, heads: {}, liveNote: '' };
@@ -627,28 +702,30 @@ window.__ModuleLoader__.load({
                   h('th', { className: 'gt-r' }, '累计 ★'),
                   h('th', { className: 'gt-r' }, addedLabel),
                   h('th', { className: 'gt-r' }, '较上轮'),
-                  h('th', { className: 'gt-tail' }, ''))),
+                  h('th', { className: 'gt-tail' }, '收藏'))),
                 h('tbody', null, rows.map((r) => {
                   const dd = deltaCell(r.delta);
                   const hit = hitOf(r.repo);
+                  const fav = favOf(r.repo);
+                  // 那句话**先算再决定摆不摆**：旧宿主的载荷没有 `cols.saved` 时 `favSavedText` 给空串，
+                  // 直接摆就是一只没有字的空气泡（界面凭空多一枚标签，而它的出处不在任何一份真相里）。
+                  const savedText = fav ? favSavedText(fav, favCols, snap?.at) : '';
                   return h('tr', { key: r.repo, className: r.fresh ? 'gt-new' : '' },
                     h('td', { className: 'gt-r' }, h(RankBadge, { rank: r.rank })),
                     h('td', null,
                       h('a', { className: 'gt-repo', ...repoLinkProps(r.repo, onRepo) }, r.name),
                       r.renamedFrom ? h('span', { className: 'gt-tag' }, `原 ${r.renamedFrom}`) : null,
+                      // 「已收藏 · 3 天前」只在没有「原 X」那一枚时摆（原型过目的形状）：两枚挤一个名字后面，读的是标签堆
+                      !r.renamedFrom && savedText ? h('span', { className: 'gt-tag' }, savedText) : null,
                       r.fresh ? h('span', { className: 'gt-tag' }, '新面孔') : null),
-                    h('td', null, h('span', {
-                      className: 'gt-desc',
-                      // 悬停必须看得到原文与**这一行自己的**来源：两种中文说的不是一件事，拿卡头那一句套每一行就串了
-                      title: hit ? `原文：${r.desc}\n${hit.label}\n${hit.note}` : (r.desc || ''),
-                    }, hit?.zh || r.desc || '—')),
+                    descCell(r.desc, hit, '—'), // ⚠️ 这一屏传的是**字面**缺位符（早于 `missingCell` 那套约定），差口登记在 §8.16 ④、本轮不顺手改
                     h('td', null, r.lang
                       ? h('span', { className: 'gt-lang' }, h('i', { style: r.langColor ? { background: r.langColor } : null }), h('span', null, r.lang))
                       : h('span', { className: 'gt-flat' }, '—')),
                     h('td', { className: 'gt-r gt-num' }, fmtCount(r.stars)),
                     h('td', { className: 'gt-r gt-num' }, fmtCount(r.added)),
                     h('td', { className: `gt-r gt-num ${dd.cls}` }, dd.text),
-                    h('td', { className: 'gt-tail' }, ''));
+                    h('td', { className: 'gt-tail' }, h(FavStar, { repo: r.repo, on: Boolean(fav), onToggle: onFav })));
                 }))))
             : null),
         h('p', { className: 'gt-note' }, snap?.sourceNote || '来源文案未就位'));
@@ -660,12 +737,15 @@ window.__ModuleLoader__.load({
      * ★ 不数条、不拼句、不判档：`thin` / `group` / `headline` / `statLine` / `note` / `missingCell` 全是宿主判好的那一份。
      * ★ 列集跟着视图收：`全站高星` 那一档只有六列（那边没有「轮」与「今日新增」的概念，摆出来就是把「被我抓过」说成「在榜过」）。
      */
-    function StarsCard({ snap, saving, onRepo, onSave }) {
+    function StarsCard({ snap, saving, onRepo, onSave, onFav }) {
       const s = snap?.stars || null;
       const as = s?.allStars || {};
       const views = s?.views || [];
       const sorts = s?.sorts || [];
       const missing = s?.missingCell || '';
+      const favMap = favMapOf(snap);
+      const favCols = snap?.fav?.cols || {};
+      const favOf = (repo) => favMap.get(String(repo ?? '').trim().toLowerCase());
       const enabled = snap?.prefs?.allStarsEnabled === true;
       const [rawView, setRawView] = useState(readUi().starsView ?? '');
       const [rawSort, setRawSort] = useState(readUi().starsSort ?? '');
@@ -697,14 +777,14 @@ window.__ModuleLoader__.load({
       const thin = s.thin === true;
       const rows = starsPick(s.rows, view, sort, as.rows);
       const countLine = isAll ? (as.statLine || '') : (s.headline || '');
-      // 列宽律与榜面同一条：# 与三个数值列拿死数、唯一"读得出内容"的那列（描述）吃余量、末尾兜底列宽 0。
+      // 列宽律与榜面同一条：# 与三个数值列拿死数、唯一"读得出内容"的那列（描述）吃余量、末尾那一列摆收藏那枚。
       const colProps = isAll
         ? [{ style: { width: 46 } }, { className: 'gt-col-repo' }, { className: 'gt-col-desc' }, { style: { width: 112 } }, { style: { width: 64 } }, { className: 'gt-tail' }]
         : [{ style: { width: 46 } }, { className: 'gt-col-repo' }, { className: 'gt-col-desc' }, { style: { width: 112 } }, { style: { width: 132 } }, { style: { width: 104 } }, { className: 'gt-tail' }];
       const headCells = isAll
-        ? [['gt-r', '#'], ['', '仓库'], ['', '描述'], ['', '语言'], ['gt-r', s.starsLabel], ['gt-tail', '']]
+        ? [['gt-r', '#'], ['', '仓库'], ['', '描述'], ['', '语言'], ['gt-r', s.starsLabel], ['gt-tail', '收藏']]
         : [['gt-r', '#'], ['', '仓库'], ['', '描述'], ['', '语言'], ['gt-r', s.starsAddedLabel],
-            [`gt-r${thin ? ' off' : ''}`, s.roundsPeakLabel], ['gt-tail', '']];
+            [`gt-r${thin ? ' off' : ''}`, s.roundsPeakLabel], ['gt-tail', '收藏']];
       const notices = [
         // §1 那一句「上一批照常显示并挂一句故障」的落点：故障说在前头，行照旧在屏上
         as.hasData === true && as.ok !== true
@@ -739,13 +819,13 @@ window.__ModuleLoader__.load({
               ? rows.map((r, i) => {
                 const hit = hitOf(r.repo);
                 const add = addedCell(r.added, missing);
+                const fav = favOf(r.repo);
+                const savedText = fav ? favSavedText(fav, favCols, snap?.at) : '';
                 return h('tr', { key: r.repo },
                   h('td', { className: 'gt-r' }, h(RankBadge, { rank: isAll ? r.rank : i + 1, medal: isAll || sort === 'stars' })),
-                  h('td', null, h('a', { className: 'gt-repo', ...repoLinkProps(r.repo, onRepo) }, r.name || r.repo)),
-                  h('td', null, h('span', {
-                    className: 'gt-desc',
-                    title: hit ? `原文：${r.desc}\n${hit.label}\n${hit.note}` : (r.desc || ''),
-                  }, hit?.zh || r.desc || missing)),
+                  h('td', null, h('a', { className: 'gt-repo', ...repoLinkProps(r.repo, onRepo) }, r.name || r.repo),
+                    savedText ? h('span', { className: 'gt-tag' }, savedText) : null),
+                  descCell(r.desc, hit, missing),
                   // 语言点：这一屏的行不带 `langColor`（回落行连语言本身都没有），色点一律走 CSS 那一份灰
                   h('td', null, r.lang
                     ? h('span', { className: 'gt-lang' }, h('i', null), h('span', null, r.lang))
@@ -755,9 +835,73 @@ window.__ModuleLoader__.load({
                     isAll ? null : h('span', { className: `gt-delta ${add.cls}` }, add.text)),
                   isAll ? null : h('td', { className: thin ? 'gt-r gt-num off' : 'gt-r gt-num' },
                     thin ? missing : [`${r.rounds} 轮`, r.bestRank > 0 ? h('span', { className: 'gt-faint2' }, `#${r.bestRank}`) : null]),
-                  h('td', { className: 'gt-tail' }, ''));
+                  h('td', { className: 'gt-tail' }, h(FavStar, { repo: r.repo, on: Boolean(fav), onToggle: onFav })));
                 })
               : h('tr', null, h('td', { colSpan: colProps.length }, h('p', { className: 'gt-empty' }, '这一档这会儿没有符合条件的仓库'))))))));
+    }
+
+    /**
+     * 收藏那一屏（第三十二轮 §8.15 ②）：七列 `# / 仓库 / 描述 / 语言 / 累计 ★ / 收藏于 / 这一轮`，末尾那一列是那一枚 ★（在这一屏它是「移出」）。
+     * ★ 列名、句子、档位名单、缺位符**一律吃载荷** `snap.fav`：客户端不数条、不拼句、不自列档位（§8 一份真相）。
+     * ★ 渲染期零请求（§8.15 ③）：行里那几格恒是收藏那一刻存的快照，要新值点仓库名走详情那条链。
+     */
+    function FavCard({ snap, onRepo, onFav }) {
+      const f = snap?.fav || null;
+      const [rawSort, setRawSort] = useState(readUi().favSort ?? '');
+      // 生效档在渲染期现推（同 StarsCard 一条律）：首帧可能还没有那份名单，存着的 id 要等名单到位才认得出来
+      const sort = pickOption(f?.sorts, rawSort, f?.defaultSort);
+      function chooseSort(id) { setRawSort(id); writeUi({ favSort: id }); }
+      if (!f) {
+        return h('section', { className: 'gt-card' },
+          h('div', { className: 'gt-card-h' }, h('span', { className: 'gt-card-t' }, '收藏')),
+          h('div', { className: 'gt-card-b' },
+            h('p', { className: 'gt-empty' }, '等待首帧：这一屏读的是本机收藏那张表，不发请求。')));
+      }
+      const missing = f.missingCell || '';
+      const cols = f.cols || {};
+      // 「读不到那张表」与「一张都还没收藏」是两件事（§8 那条「两者不许混」）：两句都吃宿主给的，界面不自己圆。
+      const noStore = f.available !== true ? h('div', { className: 'gt-notice gt-notice-err' }, f.noStoreNote) : null;
+      const rows = favPick(f.rows, sort);
+      const colProps = [{ style: { width: 34 } }, { className: 'gt-col-repo' }, { className: 'gt-col-desc' },
+        { style: { width: 112 } }, { style: { width: 88 } }, { style: { width: 78 } }, { style: { width: 70 } }, { className: 'gt-tail' }];
+      const headCells = [['gt-r', '#'], ['', '仓库'], ['', '描述'], ['', '语言'],
+        ['gt-r', cols.stars], ['gt-r', cols.column], ['gt-r', cols.onBoard], ['gt-tail', '★']];
+      return h('section', { className: 'gt-card' },
+        h('div', { className: 'gt-card-h' },
+          h('span', { className: 'gt-card-t' }, '收藏'),
+          (f.sorts || []).length
+            ? h('span', { className: 'gt-seg' }, f.sorts.map((o) => h('button', {
+                key: o.id, className: sort === o.id ? 'on' : '', onClick: () => chooseSort(o.id),
+              }, o.label)))
+            : null,
+          h('span', { className: 'gt-card-n gt-num' }, `${f.count} 条`)),
+        h('div', { className: 'gt-card-b' },
+          noStore,
+          rows.length
+            ? h('div', { className: 'gt-scroll' }, h('table', { className: 'gt-tbl' },
+                h('colgroup', null, colProps.map((p, i) => h('col', { key: i, ...p }))),
+                h('thead', null, h('tr', null, headCells.map(([cls, label], i) => h('th', { key: i, className: cls || undefined }, label)))),
+                h('tbody', null, rows.map((r, i) => h('tr', { key: r.repo },
+                  h('td', { className: 'gt-r gt-num' }, String(i + 1)),
+                  h('td', null,
+                    h('a', { className: 'gt-repo', ...repoLinkProps(r.repo, onRepo) }, r.name || r.repo),
+                    // ★ 吃宿主拼好的整句 `fromCell`：这里接「来自 + 榜名」就是第二份榜名（§8 一份真相）
+                    r.fromCell ? h('span', { className: 'gt-tag' }, r.fromCell) : null),
+                  // ★ 第 11 格 `r.descZh`（§8.16 ②）：宿主比过原文才送过来，这里只摆字不判档
+                  descCell(r.desc, r.descZh, missing),
+                  // 语言点是收藏那一刻存的那一份（这一屏不刷新读数），库里没带色值就吃 CSS 那一份灰
+                  h('td', null, r.lang
+                    ? h('span', { className: 'gt-lang' }, h('i', { style: r.langColor ? { background: r.langColor } : null }), h('span', null, r.lang))
+                    : h('span', { className: 'gt-flat' }, missing)),
+                  h('td', { className: 'gt-r gt-num' }, Number.isFinite(r.stars) ? fmtCount(r.stars) : missing),
+                  h('td', { className: 'gt-r gt-num' }, fmtAge(r.addedAt, snap?.at)),
+                  // 「这一轮」是宿主本地比出来的成品句（§8.15 ⑥）；没命中的那一档置灰，与明星屏同一条读法
+                  h('td', { className: `gt-r${r.onBoard === f.offBoardCell ? ' gt-flat' : ''}` }, r.onBoard),
+                  h('td', { className: 'gt-tail' }, h(FavStar, { repo: r.repo, on: true, onToggle: onFav })))))))
+            // 「读不到那张表」与「一行都还没收藏」是两件事：存储位不真时那一句故障话已经在卡体里念过了，
+            // 再补一句「还没有收藏」就是两句互相拆台（宿主那一路此时恒给零行，缺这一道闸就两句同时摆出来）。
+            : (f.available === true ? h('p', { className: 'gt-empty' }, f.emptyNote) : null)),
+        h('p', { className: 'gt-note' }, f.note));
     }
 
     /** 跨榜同现：吃同一次检查的三张榜，零额外请求。 */
@@ -1025,6 +1169,7 @@ window.__ModuleLoader__.load({
       { id: 'overview', label: '总览' },
       ...BOARDS().map((b) => ({ id: b, label: boardLabel(b) })),
       { id: 'stars', label: '明星仓库' },
+      { id: 'fav', label: '收藏' },
       { id: 'events', label: '变化记录' },
       { id: 'settings', label: '设置' },
     ];
@@ -1032,6 +1177,7 @@ window.__ModuleLoader__.load({
     function TabBar({ tab, onTab, snap }) {
       const counts = BOARDS().reduce((acc, b) => { acc[b] = snap?.boards?.[b]?.rowsTotal ?? 0; return acc; }, {});
       counts.stars = snap?.stars?.rows?.length ?? 0;
+      counts.fav = snap?.fav?.rows?.length ?? 0;
       counts.events = (snap?.events || []).length;
       return h('nav', { className: 'gt-tabs' }, TABS.map((t) =>
         h('button', {
@@ -1094,9 +1240,12 @@ window.__ModuleLoader__.load({
      *   全在载荷 `v.manual` 的 `section` / `actions[].{action,kind,label,can,note}` 里，那两段的段名与正文在 `manual.sections`；
      *   跑完这一趟说了什么只在回执的 `notes` 里 —— 客户端不数发数、不排名单、不拼句、不判哪一档做得了摘要。
      */
-    function DetailModal({ detail, manual, onManual, onClose, onRefresh }) {
+    function DetailModal({ detail, manual, fav, onFav, onManual, onClose, onRefresh }) {
       const v = detail.view;
       const repo = detail.repo || v?.repo || '';
+      // 弹框头部那一枚的亮/灭同样只吃载荷 `fav.rows`（§8.15 ①「三处入口、同一个状态源」）：详情载荷里没有这一格，也不自己记。
+      const favKey = String(repo).trim().toLowerCase();
+      const favHit = (fav?.rows || []).find((r) => String(r?.repo ?? '').trim().toLowerCase() === favKey) || null;
       const githubUrl = v?.htmlUrl || `https://github.com/${repo}`;
       const stampLabels = cfg().detailStampLabels || {};
       // ★ 第二十七轮：这一句的时刻**一律吃 `v.at`**（= 上一次真拿到正文的时刻，两条路同一个来源）。
@@ -1157,7 +1306,11 @@ window.__ModuleLoader__.load({
           h('div', { className: 'gt-modal-h' },
             h('span', { className: 'gt-modal-t' }, v?.name || repo),
             h('span', { className: 'gt-sub gt-num', title: repo }, repo),
-            h('button', { className: 'gt-modal-x', onClick: onClose, title: '关闭（Esc）' }, '×')),
+            // 那一枚与 × 成一组（.gt-modal-acts 与段名行那三枚共用同一条 margin-left:auto 布局，类名另起 ⇒ 见 CSS 那条注释）
+            // 而不是夹在仓库名后面 —— 头部是 baseline 对齐的一排，两个控件自成一组才不受字基线影响。
+            h('span', { className: 'gt-modal-acts' },
+              h(FavStar, { repo, on: Boolean(favHit), onToggle: onFav }),
+              h('button', { className: 'gt-modal-x', onClick: onClose, title: '关闭（Esc）' }, '×'))),
           h('div', { className: 'gt-modal-b' },
             detail.loading
               ? h('p', { className: 'gt-modal-p gt-sub' }, '正在取这份仓库的详情：最多四发出网（元数据、README，必要时再看有没有中文那份），比榜面慢一些。')
@@ -1364,6 +1517,24 @@ window.__ModuleLoader__.load({
         }
       }
 
+      /**
+       * 那一枚 ☆/★ 发的那一发（§8.15 ⑧）：body 只带 `{repo, action}` —— 快照那五格由宿主在写那一刻自己取，
+       * 界面上那颗星按下去**不许**把浏览器看到的星数写进库里（那就是第二份星数）。
+       * ★ 失败不摆横幅（本轮裁定）：亮与灭恒来自快照，这一发没成屏上就不会变，而那本身就是回执；
+       *   唯一现实的失败面是「存储不可用」，那一句在收藏那一屏的卡体里预先念过（`fav.noStoreNote`）。
+       */
+      async function toggleFav(repo, action) {
+        if (!repo || !action) return;
+        try {
+          const r = await api('/fav', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ repo, action }),
+          });
+          if (r && r.fav) setSnap((p) => (p ? { ...p, fav: r.fav } : p));
+        } catch { /* 见上面那条：这一屏没有第二处可以替它说的话 */ }
+      }
+
       const settings = h(SettingsCard, {
         snap, saving, savedNote, savedErr, language, proxyUrl, credDraft,
         onLanguage: setLanguage,
@@ -1375,8 +1546,9 @@ window.__ModuleLoader__.load({
       const onRepo = (repo) => { loadDetail(repo); };
       let panel;
       if (tab === 'settings') panel = h('div', { className: 'gt-panel' }, settings, h(EnvCard, { snap }));
-      else if (BOARDS().includes(tab)) panel = h(BoardCard, { snap, board: tab, onRepo });
-      else if (tab === 'stars') panel = h(StarsCard, { snap, saving, onRepo, onSave: (p) => savePrefs(p) });
+      else if (BOARDS().includes(tab)) panel = h(BoardCard, { snap, board: tab, onRepo, onFav: toggleFav });
+      else if (tab === 'stars') panel = h(StarsCard, { snap, saving, onRepo, onSave: (p) => savePrefs(p), onFav: toggleFav });
+      else if (tab === 'fav') panel = h(FavCard, { snap, onRepo, onFav: toggleFav });
       else if (tab === 'events') panel = h(EventsCard, { snap });
       else panel = h(OverviewTab, { snap, conn, onGo: goTab, onRepo });
 
@@ -1390,6 +1562,8 @@ window.__ModuleLoader__.load({
           ? h(DetailModal, {
               detail,
               manual,
+              fav: snap?.fav,
+              onFav: toggleFav,
               onManual: runManual,
               onClose: closeDetail,
               onRefresh: () => loadDetail(detail.repo, { refresh: true, keep: true }),
@@ -1420,9 +1594,11 @@ window.__ModuleLoader__.load({
       // ★ 第二十九轮：选择态落盘那三个（键名 / 读写 / 只认名单的回落），用例吃同一份出处、不自己拼键名
       UI_KEY, readUi, writeUi, pickOption,
       repoLinkProps, escClose, IDLE_DETAIL, IDLE_MANUAL, expandBlocks, addedCell, starsPick,
+      // ★ 第三十二轮：收藏那三枚的出处（重排 / 查表 / 那一句）与那个组件，用例吃同一份、不自己再拼一遍
+      favPick, favMapOf, favSavedText, FavStar,
       components: {
         Header, TabBar, OverviewTab, BoardMini, StatusCard, BoardCard, CrossCard,
-        EventsCard, SettingsCard, EnvCard, RankBadge, DetailModal, GhTrendingPage, StarsCard,
+        EventsCard, SettingsCard, EnvCard, RankBadge, DetailModal, GhTrendingPage, StarsCard, FavCard,
       },
     };
     // 宿主 ModuleLoader 吃的是 factory 的**返回值**当模块导出：

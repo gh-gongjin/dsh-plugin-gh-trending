@@ -7,9 +7,12 @@
  */
 import { check, runAll, assert, makeFakeFacility } from './_helpers.mjs';
 import {
-  createStateStore, createEventStore, createSeenStore, createPrefsStore, createRepoCacheStore, createTransStore, createSearchStore, RECORDS_ERROR,
+  createStateStore, createEventStore, createSeenStore, createPrefsStore, createRepoCacheStore, createTransStore, createSearchStore, createFavStore, RECORDS_ERROR,
 } from '../lib/stores.js';
-import { BOARDS, DEFAULT_PREFS, GHT_DOMAIN, REPO_CACHE_MAX, REPO_ERROR_LABELS, TRANS_MAX, LLM_KINDS, PREF_CRED_FIELDS, SEARCH_ROW_SHAPE } from '../lib/domain.js';
+import { BOARDS, BOARD_LABELS, DEFAULT_PREFS, GHT_DOMAIN, REPO_CACHE_MAX, REPO_ERROR_LABELS, TRANS_MAX, LLM_KINDS, PREF_CRED_FIELDS, SEARCH_ROW_SHAPE,
+  // ★ 第三十二轮：收藏那一格的出处是**封闭五档**（前三档由 `BOARD_LABELS` 派生）—— 用例里也不手抄那五个词。
+  FAV_FROM_STARS, FAV_FROM_DETAIL, FAV_FROM_SOURCES, FAV_ACTIONS,
+} from '../lib/domain.js';
 
 /* ---------------- 造合法行的最小素材 ---------------- */
 const boardRow = (over = {}) => ({
@@ -53,6 +56,16 @@ const searchBatch = (over = {}) => ({
   rows: [searchRow()], rateLeft: 9, rateLimit: 10, rateResetAt: 4000, rateAuthed: false, ...over,
 });
 
+/**
+ * 收藏一行（`fav` 表，第三十二轮 §8.15 ④）：八格里只有 `repo` / `addedAt` / `from` 是必填，
+ * 其余五格是「那一刻」的快照，宿主从本地表派生得到就有、派生不到就整格不进库（不是存空串）。
+ */
+const favSeed = (over = {}) => ({
+  repo: 'tester-army/e2e', name: 'tester-army/E2E', desc: 'e2e testing',
+  lang: 'TypeScript', langColor: '#3178c6', stars: 2474,
+  addedAt: 1000, from: BOARD_LABELS.daily, ...over,
+});
+
 function mk({ now = () => 1000 } = {}) {
   const facility = makeFakeFacility();
   const logs = { warn: [] };
@@ -67,6 +80,7 @@ function mk({ now = () => 1000 } = {}) {
     repo: createRepoCacheStore(opts),
     trans: createTransStore(opts),
     search: createSearchStore(opts),
+    fav: createFavStore({ ...opts, now }),
   };
 }
 
@@ -77,17 +91,18 @@ function advancing(start = 1000) {
 }
 
 /* ---------------- 域与登记表 ---------------- */
-check('域声明：gh_trending 名字与七表都过宿主正则，version 停在 1', () => {
+check('域声明：gh_trending 名字与八表都过宿主正则，version 停在 1', () => {
   assert.equal(GHT_DOMAIN.name, 'gh_trending');   // 带连字符的插件名不能当域名（宿主 ^[a-z][a-z0-9_]*$）
-  assert.deepEqual(Object.keys(GHT_DOMAIN.tables).sort(), ['events', 'prefs', 'repo', 'search', 'seen', 'state', 'trans']);
+  assert.deepEqual(Object.keys(GHT_DOMAIN.tables).sort(), ['events', 'fav', 'prefs', 'repo', 'search', 'seen', 'state', 'trans']);
   // ★ 抬版本 = 本机那份 gh_trending.json 整个打不开：整档布局按 stored !== descriptor.version 直接抛
   //   version-mismatch（dsh-storage-json/lib/index.js:102），compatibleVersions 只对 per-record 布局生效。
   //   加一张表不需要抬版本 —— 文件里没有这张表就是空表起步（同文件 :111）。
-  //   10-06 加 `trans`（译文表）时按这条律走过；10-08 加 `search`（全站高星那一批）时同一条律原样走。
+  //   10-06 加 `trans`（译文表）时按这条律走过；10-08 加 `search`（全站高星那一批）时同一条律原样走；
+  //   10-13 加 `fav`（收藏，第三十二轮 §8.15 ④）还是同一条 —— 这条断言钉的就是"第四次于加表时没顺手抬版本"。
   assert.equal(GHT_DOMAIN.version, 1, '要抬版本请先给出"老库怎么迁移"的证据，否则就是拿用户的榜史换版本号');
 });
 
-check('七表同域：同一设施只 open 一次（重复 open = already-open 血案）', async () => {
+check('八表同域：同一设施只 open 一次（重复 open = already-open 血案）', async () => {
   const s = mk();
   await s.state.write('daily', stateRow('daily'));
   await s.events.append({ kind: 'baseline', detail: 'x' });
@@ -95,11 +110,13 @@ check('七表同域：同一设施只 open 一次（重复 open = already-open �
   await s.prefs.patch({ topN: 9 });
   await s.repo.put(repoRow());
   await s.trans.put(transRow());
-  assert.equal(s.facility.calls.open, 1, '六张表各自 open 就会撞 already-open');
+  await s.fav.add(favSeed());
+  assert.equal(s.facility.calls.open, 1, '七张表各自 open 就会撞 already-open');
   assert.equal(s.facility.rowCount('gh_trending', 'state'), 1);
   assert.equal(s.facility.rowCount('gh_trending', 'prefs'), 1);
   assert.equal(s.facility.rowCount('gh_trending', 'repo'), 1);
   assert.equal(s.facility.rowCount('gh_trending', 'trans'), 1);
+  assert.equal(s.facility.rowCount('gh_trending', 'fav'), 1, '第八张表落在同一个域里，不是另开一档');
 });
 
 check('close：最后一个持有者放手才真关域（不许顺手关掉别人的域）', async () => {
@@ -111,12 +128,14 @@ check('close：最后一个持有者放手才真关域（不许顺手关掉别�
   await s.prefs.read();                            // 另一个仓储照常用
   await s.repo.put(repoRow());                      // 详情缓存也是持有者
   await s.trans.put(transRow());                    // 译文表同样是
+  await s.fav.add(favSeed());                       // ★ 收藏表同样是（第三十二轮：第八个持有者）
   await s.repo.close();
   await s.prefs.close();
   await s.events.close();
   await s.seen.close();
   await s.trans.close();
-  assert.equal(s.facility.calls.close, 1, '六个持有者全放手 ⇒ 恰好真关一次');
+  await s.fav.close();
+  assert.equal(s.facility.calls.close, 1, '七个持有者全放手 ⇒ 恰好真关一次');
 });
 
 check('close：仓储终态 ≠ 域关闭，关闭后写入报 CLOSED', async () => {
@@ -741,4 +760,110 @@ check('★ schema 的 open 校验：每张表都必须吃得下"上一版库存�
   assert.equal('bestRank' in seenParsed, false, 'seen 的 parse 不造 bestRank（同上）');
 });
 
-await runAll('store');
+/* ---------------- fav（收藏，第三十二轮 §8.15 ④） ---------------- */
+check('fav：入库键统一小写，同一仓库的两个写法是同一行（两枚 ★ 各亮各的根源就在这格）', async () => {
+  const s = mk();
+  await s.fav.add(favSeed({ repo: 'Tester-Army/E2E' }));
+  assert.equal(s.facility.rowCount('gh_trending', 'fav'), 1, '大小写两种写法各存一行 = 收藏清单里同一个仓库两个副本');
+  const back = await s.fav.get('tester-army/e2e');
+  assert.equal(back.repo, 'tester-army/e2e');
+  assert.equal((await s.fav.get('TESTER-army/E2E')).stars, 2474, '取回也走同一条归一');
+  assert.equal(await s.fav.get('没收藏过的/仓库'), null, '没收藏过是给 null，不是给 undefined（界面不必防两种空）');
+  await assert.rejects(() => s.fav.get('   '), (e) => e.code === RECORDS_ERROR.INVALID, '空键挡在队列之前');
+  await assert.rejects(() => s.fav.add(favSeed({ repo: '' })), (e) => e.code === RECORDS_ERROR.INVALID);
+  await assert.rejects(() => s.fav.remove('  '), (e) => e.code === RECORDS_ERROR.INVALID);
+});
+
+check('★ fav：add 幂等且沿用库里那一行的 addedAt（「收藏于 3 天前」不能被重复点那枚 ☆ 刷成「刚刚」）', async () => {
+  let at = 1000;
+  const facility = makeFakeFacility();
+  const fav = createFavStore({ getFacility: () => facility, now: () => at });
+  const first = await fav.add({ repo: 'a/b', name: 'A/B', stars: 10, from: BOARD_LABELS.daily });
+  assert.equal(first.already, false);
+  assert.equal(first.row.addedAt, 1000);
+  at = 9000;                                     // 三天后再点一次同一枚（比如先移出又收回之外的连点）
+  const again = await fav.add({ repo: 'A/B', name: 'A/B', stars: 20, from: FAV_FROM_STARS });
+  assert.equal(again.already, true, '已存在那一行要如实报 already，界面上那一枚才知道自己是"重复按"');
+  assert.equal(again.row.addedAt, 1000, '幂等那一支恒沿旧 addedAt：那一列说的是第一次收的那一刻');
+  assert.equal(again.row.stars, 20, '余下五格快照按新值覆盖：重新看到的那个数就是新的');  assert.equal(again.row.from, FAV_FROM_STARS, '出处跟着这一次重新派生（这次是从明星那一屏收的）');
+  assert.equal(facility.rowCount('gh_trending', 'fav'), 1, '两次点同一枚只有一行');
+});
+
+check('fav：remove 摘掉那一行，库里本来没有时 removed 给假（界面上那枚 ★ 与库存不一致时这一发要说得出话）', async () => {
+  const s = mk();
+  await s.fav.add(favSeed());
+  assert.equal((await s.fav.remove('tester-army/e2e')).removed, true);
+  assert.equal(s.facility.rowCount('gh_trending', 'fav'), 0);
+  assert.equal(await s.fav.get('tester-army/e2e'), null);
+  const twice = await s.fav.remove('tester-army/e2e');
+  assert.equal(twice.removed, false, '第二次移出没有东西可摘 —— 这个位是给回执说的，不是给界面猜的');
+});
+
+check('fav：list 按 addedAt 倒序（新收的在最上），装配侧只有这一种序', async () => {
+  let at = 1000;
+  const facility = makeFakeFacility();
+  const fav = createFavStore({ getFacility: () => facility, now: () => at });
+  for (const r of ['o/first', 'o/second', 'o/third']) { at += 1000; await fav.add({ repo: r, from: BOARD_LABELS.daily }); }
+  const listed = await fav.list();
+  assert.deepEqual(listed.map((x) => x.repo), ['o/third', 'o/second', 'o/first']);
+  assert.equal(listed[0].addedAt, 4000, '最后收的那一位在最上（时钟每跳 1000，三发落的是 2000/3000/4000）');
+});
+
+check('★ fav：不裁行、不设上限、不参与 LRU（收藏久了不许被系统悄悄删掉 —— 与 repo 那张缓存表最大的不同）', async () => {
+  const facility = makeFakeFacility();
+  const fav = createFavStore({ getFacility: () => facility, now: () => 1000 });
+  for (let i = 0; i < REPO_CACHE_MAX + 30; i += 1) await fav.add({ repo: `o/r${i}`, addedAt: 1000 + i, from: BOARD_LABELS.weekly });
+  assert.equal(facility.rowCount('gh_trending', 'fav'), REPO_CACHE_MAX + 30,
+    '按 at 裁那种 LRU 摆在这里等于把用户挑过的东西删掉；这一张表恒不裁');
+  assert.equal((await fav.list()).length, REPO_CACHE_MAX + 30);
+  assert.equal(REPO_CACHE_MAX > 30, true, '前提：详情缓存那张表确实有上限，这条对照才不是空说');
+});
+
+check('★ fav：schema 挡脏行 —— from 只认封闭五档（缺它整行 INVALID），越界与手打的串都进不来', async () => {
+  const s = mk();
+  await assert.rejects(() => s.fav.add({ repo: 'a/b', addedAt: 1000 }),
+    (e) => e.code === RECORDS_ERROR.INVALID, '缺出处必须存不进去，而不是界面上念一句「—」');
+  await assert.rejects(() => s.fav.add(favSeed({ from: '来自日榜' })),
+    (e) => e.code === RECORDS_ERROR.INVALID, '拼错的出处是自由串，不是那一档');
+  await assert.rejects(() => s.fav.add(favSeed({ from: '' })), (e) => e.code === RECORDS_ERROR.INVALID);
+  assert.equal(s.facility.rowCount('gh_trending', 'fav'), 0, '三发全被挡 ⇒ 库里一个字都没落');
+  await s.fav.add(favSeed({ from: FAV_FROM_DETAIL }));
+  assert.equal((await s.fav.get('tester-army/e2e')).from, FAV_FROM_DETAIL);
+  assert.deepEqual(FAV_FROM_SOURCES.slice(0, 3), BOARDS.map((b) => BOARD_LABELS[b]),
+    '★ 前提：前三档由 BOARDS + BOARD_LABELS 派生（手抄就会在加榜那天漂），后两档是明星与详情');
+  assert.deepEqual(FAV_FROM_SOURCES.slice(3), [FAV_FROM_STARS, FAV_FROM_DETAIL]);
+});
+
+check('fav：快照那五格缺位照样存得进（本机一个读数都没见过它时，那一行只有 repo / addedAt / from）', async () => {
+  const s = mk();
+  const r = await s.fav.add({ repo: 'never/seen', addedAt: 1000, from: FAV_FROM_DETAIL });
+  assert.equal(r.row.stars, undefined, '没派生到就不许硬造 0 或空串（0 冒充"那一刻真是 0 星"）');
+  assert.equal('desc' in r.row, false);
+  assert.equal(s.facility.rowCount('gh_trending', 'fav'), 1);
+});
+
+check('fav：无设施时 available=false，读写都报 UNAVAILABLE（那一屏据此念「存储不可用」而不是「还没有收藏」）', async () => {
+  const fav = createFavStore({ getFacility: () => undefined });
+  assert.equal(fav.available, false);
+  await assert.rejects(() => fav.list(), (e) => e.code === RECORDS_ERROR.UNAVAILABLE);
+  await assert.rejects(() => fav.get('a/b'), (e) => e.code === RECORDS_ERROR.UNAVAILABLE);
+  await assert.rejects(() => fav.add({ repo: 'a/b', from: BOARD_LABELS.daily }), (e) => e.code === RECORDS_ERROR.UNAVAILABLE);
+  await assert.rejects(() => fav.remove('a/b'), (e) => e.code === RECORDS_ERROR.UNAVAILABLE);
+});
+
+check('fav：写动作那两档是封闭枚举，且 domain 里只有一份（界面与路由各自抄一遍必漂）', () => {
+  assert.deepEqual(FAV_ACTIONS, ['add', 'remove']);
+  assert.deepEqual(Object.keys(GHT_DOMAIN.tables).sort(), ['events', 'fav', 'prefs', 'repo', 'search', 'seen', 'state', 'trans'],
+    '★ 前提：`fav` 确实进了表名单（上面那条钉八表齐，这一条钉这张新表用的是同一份出处）');
+});
+
+check('★ fav：新表没有历史行，但从本轮起它自己也进了「已有表」那一侧 —— 三格必填是当时的口径，往后加必填键就是重演 10-07', () => {
+  // 10-13 落纸时 `fav` 是空表，`repo` / `addedAt` / `from` 走 required* 安全（§8.15 ④ 那条改口）。
+  // 这一条把"安全"的前提钉在盘上：少了这三格 parse 就抛 ⇒ 谁将来把它们改成 optional 或再往这张表塞必填键，都会在这里被点名。
+  const schema = GHT_DOMAIN.tables.fav.valueSchema;
+  assert.throws(() => schema.parse({ addedAt: 1000, from: BOARD_LABELS.daily }), undefined, '缺主键必须挡（三格都是 required）');
+  assert.throws(() => schema.parse({ repo: 'a/b', from: BOARD_LABELS.daily }), undefined, '缺 addedAt 必须挡');
+  assert.throws(() => schema.parse({ repo: 'a/b', addedAt: 1000 }), undefined, '缺出处必须挡');
+  const minimal = schema.parse({ repo: 'a/b', addedAt: 1000, from: BOARD_LABELS.daily });
+  assert.deepEqual(Object.keys(minimal).sort(), ['addedAt', 'from', 'repo'], 'parse 不凭空造那五格快照');
+});await runAll('store');

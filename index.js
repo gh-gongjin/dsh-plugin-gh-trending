@@ -23,7 +23,7 @@
  */
 import { createApiHandler, ROUTE_PREFIX, GLOBAL_KEY } from './lib/api.js';
 import { createCaps } from './lib/caps.js';
-import { createStateStore, createEventStore, createPrefsStore, createSeenStore, createRepoCacheStore, createTransStore, createSearchStore } from './lib/stores.js';
+import { createStateStore, createEventStore, createPrefsStore, createSeenStore, createRepoCacheStore, createTransStore, createSearchStore, createFavStore } from './lib/stores.js';
 import { createCheckService } from './lib/check.js';
 import {
   BOARDS, BOARD_LABELS, BOARD_ADDED_LABELS, TRENDING_SOURCE_NOTE, LANG_CHECK,
@@ -144,6 +144,9 @@ export function apply(ctx, config = {}) {
   const transStore = createTransStore({ getFacility, logger: ctx.logger });
   // ★ 第七张表（第二十三轮）：那一档最多一行（key 恒 `batch`），坏轮冻结的读法与 state 表同一条（理由见 domain 的 searchRecord）。
   const searchStore = createSearchStore({ getFacility, logger: ctx.logger });
+  // ★ 第八张表（第三十二轮 §8.15 收藏）：key = 小写 `owner/name`，**不裁行、不设上限、不参与 LRU**
+  //   （按 `at` 裁那种读法在这儿等于"收藏久了被系统悄悄删掉"，理由见 domain 的 `favRecord` 与 §8.15 ④）。
+  const favStore = createFavStore({ getFacility, logger: ctx.logger, now: () => Date.now() });
 
   let prefsView = {
     intervalMin: resolved.intervalMin,
@@ -270,6 +273,11 @@ export function apply(ctx, config = {}) {
     searchStore,
     searchFetcher,
     repoService,
+    // ★ 第三十二轮（收藏 §8.15）那两格：`favStore` 是那一屏的原料与写入口；
+    //   `repoStore` 只给写路径的 `favSeedOf` 当**最后一路本地读数**（详情屏那一枚 ☆ 收的仓库未必在任何一张榜上）。
+    //   ★ 给的是**表**而不是 `repoService`：后者会在 TTL 之外真问 GitHub，而收藏这一趟的出网账是 0（§8.15 ⑨）。
+    favStore,
+    repoStore,
     translator,
     webTranslator,
     caps,
@@ -288,7 +296,7 @@ export function apply(ctx, config = {}) {
     try { translator.dispose(); } catch (e) { ctx.logger?.warn?.(`[gh-trending] 释放现译服务失败：${e?.message ?? e}`); }
     // 第九轮那两档（免费 / 官方）同理：清在途表 ⇒ 之后不再往翻译域名发一发
     try { webTranslator.dispose(); } catch (e) { ctx.logger?.warn?.(`[gh-trending] 释放翻译接口服务失败：${e?.message ?? e}`); }
-    for (const s of [stateStore, eventStore, seenStore, prefsStore, repoStore, transStore, searchStore]) {
+    for (const s of [stateStore, eventStore, seenStore, prefsStore, repoStore, transStore, searchStore, favStore]) {
       Promise.resolve(s.close?.()).catch((e) => ctx.logger?.warn?.(`[gh-trending] 关闭存储句柄失败：${e?.message ?? e}`));
     }
   }

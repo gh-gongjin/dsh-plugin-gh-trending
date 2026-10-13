@@ -22,7 +22,9 @@ import { BOARDS, BOARD_LABELS, BOARD_ADDED_LABELS, CHECK_INTERVALS, CHECK_INTERV
   PROXY_MODES, TRANSLATE_CRED_FIELDS, TRANSLATE_CRED_ALL,
   // ★ 第二十一轮：凭据清单在 domain 派生成一份（含 GitHub 令牌那把）；判据扫的是派生后那份，
   //   旧的那份只列三家翻译的 ⇒ 拿它当"全部密钥"就漏扫了令牌（手抄必漏，见 hc-0）。
-  PREF_CRED_FIELDS, PREF_SECRET_KEYS } from '../lib/domain.js';
+  PREF_CRED_FIELDS, PREF_SECRET_KEYS,
+  // ★ 第三十二轮（收藏 §8.15）：那一屏的出处枚举与那句故障话都在 domain，用例不抄中文。
+  FAV_FROM_DETAIL, FAV_NO_STORE_NOTE } from '../lib/domain.js';
 import { GHT_DOMAIN } from '../lib/domain.js';
 // ★ 第三十一轮：整个模块当命名空间再引一次 —— 「那个撤掉的常数还在不在导出里」只能用这种问法（`in`），
 //   具名 import 一个不存在的导出会在装载期就炸，炸在别的用例头上、报的不是这一笔账。
@@ -668,6 +670,133 @@ check('hc-21 GitHub 令牌的接线（第二十一轮）：装配处现取现算
   // 「匿名配额 / 已认证配额」那两个字由 domain 给、repo.js 按响应头选，界面只念 —— 抄一份就是第二个真相。
   assert.ok(!/匿名配额|已认证配额/.test(codeOf('client.js')),
     'client.js 自己写了那两个字 ⇒ 宿主报错读数时界面会把它圆成"看着对"的那一句');
+});
+
+check('hc-22 ★第八张表的接线（第三十二轮收藏）：真装配点那一枚落得进真表、快照读得回来，teardown 把域真关，存储域坏时那一屏念的是那句故障话', async () => {
+  const facility = makeFakeFacility();
+  const registered = [];
+  const ctx = makeFakeCtx({
+    facility,
+    timerInterval: () => ({ fn: () => {}, unref() {} }),
+    webServer: { register: (spec) => { registered.push(spec); return () => {}; } },
+  });
+  const teardown = apply(ctx, {});
+  await flush(10);
+  const routeEff = ctx._internals.effects.find((e) => e.name === 'gh-trending:route');
+  assert.ok(routeEff, '路由没挂 ctx.effect 就谈不上这一路');
+  routeEff.fn();
+  const h = registered[0].handler;
+
+  // ① 真装配 + 真仓储 + 假设施：那一枚点下去走的是 index.js 那一条链
+  const post = makeRes();
+  await h(makeReq({
+    method: 'POST',
+    url: `${ROUTE_PREFIX}/api/fav`,
+    // ★ 故意多递两格：body 只认 `{repo, action}`，这两格一个字都不许进库
+    body: { repo: 'Vitejs/Vite', action: 'add', stars: 999, desc: '浏览器自己给的描述' },
+  }), post);
+  await flush(20);
+  assert.equal(post.statusCode, 200, JSON.stringify(post.json()));
+  assert.equal(post.json().data.repo, 'vitejs/vite', '主键归一到小写才落库（装配那一路同一条律）');
+  assert.equal(facility.rowCount(GHT_DOMAIN.name, 'fav'), 1, '第八张表真落了行 —— deps 里漏接 favStore 时这一格是 0');
+  const gres = makeRes();
+  await h(makeReq({ url: `${ROUTE_PREFIX}/api/snapshot` }), gres);
+  await flush(10);
+  const s = gres.json().data;
+  assert.equal(s.fav.available, true, '存储位真 ⇒ 那一屏说存得下（这一格由装配层传 favStore.available，界面不参与）');
+  assert.equal(s.fav.count, 1);
+  assert.equal(s.fav.rows[0].repo, 'vitejs/vite');
+  assert.equal(s.fav.rows[0].stars, null, '浏览器递的星数没落库（落了就是第二份星数）');
+  assert.equal(s.fav.rows[0].desc, '', '浏览器递的描述同样没落库');
+  assert.equal(s.fav.rows[0].from, FAV_FROM_DETAIL, '本机四路都没有那一行的读数 ⇒ 出处落「详情」（派生顺序在宿主）');
+
+  // ② teardown 把八张表都交还：第八路没进 close 名单 ⇒ 引用计数不归零，域留在设施里（真机 reload 撞 already-open）
+  teardown();
+  await flush(20);
+  assert.equal(facility.rowCount(GHT_DOMAIN.name, 'fav'), -1, 'teardown 后域该真关（-1 = 设施里查不到这个域）');
+  assert.equal(facility.calls.close, 1, '八路仓储共用一个域 ⇒ 只该真关一次');
+
+  // ③ 存储域 open 失败那一形：路由照登记，那一屏念那句故障话而不是空表那句
+  const broken = { async open() { throw new Error('already-open: gh_trending'); } };
+  const reg2 = [];
+  const ctx2 = makeFakeCtx({
+    facility: broken,
+    timerInterval: () => ({ fn: () => {}, unref() {} }),
+    webServer: { register: (spec) => { reg2.push(spec); return () => {}; } },
+  });
+  const td2 = apply(ctx2, {});
+  await flush(10);
+  const eff2 = ctx2._internals.effects.find((e) => e.name === 'gh-trending:route');
+  assert.ok(eff2, '存储坏了路由那节照样要挂上');
+  eff2.fn();
+  assert.equal(reg2.length, 1, '存储坏了路由照登记：收藏那一屏降级成"读不到"，不是整个面板起不来');
+  const h2 = reg2[0].handler;
+  const sres = makeRes();
+  await h2(makeReq({ url: `${ROUTE_PREFIX}/api/snapshot` }), sres);
+  await flush(10);
+  assert.equal(sres.statusCode, 200, '存储坏了快照该照给（榜面还能看）');
+  const f2 = sres.json().data.fav;
+  assert.equal(f2.available, false, 'open 失败 ⇒ available 落 false（把"读不到"当"没数据"，界面就会说错原因）');
+  assert.deepEqual(f2.rows, []);
+  assert.equal(f2.noStoreNote, FAV_NO_STORE_NOTE, '那一句整句从 domain 来，界面不自己圆');
+  const pres = makeRes();
+  await h2(makeReq({ method: 'POST', url: `${ROUTE_PREFIX}/api/fav`, body: { repo: 'a/b', action: 'add' } }), pres);
+  await flush(10);
+  assert.equal(pres.statusCode, 501, '存储坏了点那一枚该 501：界面那枚不变，就是这一发的回执');
+  td2();
+});
+
+/**
+ * 合成样本：把命中判据**抄到调用端**去的那一种写法（四条形状齐）。
+ * ★ 正样本存在的理由：扫不到它的那四条正则就是扫空气，"只有一处出处"会变成给空气立的牌坊（hc-8 同一条自证律）。
+ */
+const SYNTHETIC_SECOND_JUDGMENT = `
+import { transSrcKey } from './services/llm.js';
+import { descZhFor } from './desc-zh.js';
+export function favZh(rows, transRows) {
+  const out = {};
+  for (const r of rows) {
+    const builtin = descZhFor(r.repo, r.desc);
+    const stored = transRows.find((t) => t.kind === 'desc' && t.repo === r.repo);
+    if (stored && stored.src === transSrcKey(r.desc)) out[r.repo] = { zh: stored.zh };
+    else if (builtin) out[r.repo] = { zh: builtin };
+  }
+  return { hits: out };
+}
+export const descZhHits = favZh;
+`;
+
+check('hc-23 ★「这句中文该不该上屏」只有一处判据（第三十三轮 §8.16 ①）：lib/favs.js 与 client.js 连比对的口径都不认', () => {
+  // 判据的两类字面：逐字比对的归一口径 + 「只认描述那一类」那道闸。它们一旦出现第二处，
+  // 两侧一漂移屏上就是「榜面有中文、收藏没中文」或反过来 —— 而那两句都是假话（§8 那份「一处判一次」）。
+  const JUDGE = [
+    { why: '逐字比对的归一口径', re: /transSrcKey/ },
+    { why: '「只认描述那一类」那道闸', re: /kind\s*[!=]==\s*['"]desc['"]/ },
+    { why: '内置表那一路的查法', re: /descZhFor/ },
+    { why: '整个命中判据函数（判据不许搬到调用端去算）', re: /descZhHits/ },
+  ];
+  const holders = [];
+  for (const rel of ['lib/favs.js', 'client.js']) {
+    const code = codeOf(rel);
+    for (const j of JUDGE) {
+      assert.equal(j.re.test(code), false, `${rel} 里出现了${j.why}的形状「${j.re}」⇒ 命中判据有了第二处出处`);
+    }
+    // 正样本自证：这四条正则扫的不是空气（漏一条形状，判据就等于没写）
+    assert.ok(JUDGE.every((j) => j.re.test(SYNTHETIC_SECOND_JUDGMENT)), `${rel} 的判据组里有一条扫不到合成样本（等于给第二处出处开了张不查的通行证）`);
+    holders.push(...(JUDGE.some((j) => j.re.test(code)) ? [rel] : []));
+  }
+  assert.deepEqual(holders, [], '上面逐条拦下了，这里再兜一遍：两处都不该有判据字面');
+
+  // ★ 唯一那一处必须真的有判据：否则这四条扫的是空气，而"只有一处"是给空气立的牌坊
+  const only = codeOf('lib/board-zh.js');
+  assert.ok(/export function descZhHits/.test(only) && /transSrcKey/.test(only) && /kind\s*!==\s*['"]desc['"]/.test(only),
+    'lib/board-zh.js 里那唯一一处判据不见了（是被删了，还是搬去了别处？）');
+  // 收藏那一屏的原料由调用端喂 ⇒ 它连"从库里读译文"这条路都不许有（第三十二轮那条零 IO 律的延伸）
+  const importsOf = (rel) => [...codeOf(rel).matchAll(/from\s+['"]([^'"]+)['"]/g)].map((m) => m[1]);
+  assert.deepEqual(importsOf('lib/favs.js'), ['./domain.js'],
+    'lib/favs.js 多一条 import 边就是它自己去读了别的模块（§8.16 ①：hits 由 lib/api.js 喂进来）');
+  // 客户端只搬字不判档：那一格的取值链里不许出现"比原文"
+  assert.equal(/\.src\s*===|===\s*hit\.src/.test(codeOf('client.js')), false, '客户端比原文 ⇒ 第三份判据');
 });
 
 await runAll('host-compat');
