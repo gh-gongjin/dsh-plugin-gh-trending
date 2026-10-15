@@ -1796,10 +1796,12 @@ check('库里躺着外部改过的脏行（手改 json / 换机搬库）：详�
  *   （真回包 30 条全都规整 ⇒ 只能现造，钉的是映射形状，不是"GitHub 真的这么答"）。
  * ------------------------------------------------------------------ */
 
-check('searchRepoUrl：门槛数只从 domain 常数来（零入参），q 里的 >= 编码成 %3E%3D，域名一个字都不带', () => {
+check('searchRepoUrl：默认那一串**逐字不变**（★ 第三十六轮参数化的反面夹具）—— 门槛数只从 domain 常数来、q 里的 >= 编码成 %3E%3D、域名一个字都不带', () => {
   const url = searchRepoUrl();
+  // ★ 本轮 `searchRepoUrl` 多了一个**可选对象**入参（`{query}`），所以这一条不再钉"零入参"而钉"入参里没有那一格"：
+  //   门槛数与 `per_page` 仍不可从调用端递进来 ⇒ 设置页念的那句 note 与真跑的查询不会分叉（§8.8 那条律逐字不动）。
   assert.equal(searchRepoUrl.length, 0,
-    'searchRepoUrl 接了入参 ⇒ 真跑的那个门槛数可以和设置页念的那一句分叉（§8.8「不念就等于偷偷定了一道门槛」）');
+    'searchRepoUrl 多出了必填位置参数 ⇒ 真跑的那个门槛数可以和设置页念的那一句分叉');
   assert.ok(url.startsWith('/search/repositories?'), `路径形状变了：${url}`);
   assert.ok(!/^[a-z][a-z0-9+.-]*:\/\//i.test(url), '路径里带 scheme ⇒ 域名就不只在 domain 那一份了（hc-7 扫的就是这一格）');
   assert.ok(url.includes('%3E%3D'), '>= 没被编码：手拼字符串时 > 原样转发，search 对此给 422 ⇒ 屏上是"这一档永远空白"而 note 还在说 100,000');
@@ -1812,6 +1814,18 @@ check('searchRepoUrl：门槛数只从 domain 常数来（零入参），q 里�
   assert.equal(qs.get('page'), '1', '每轮只一发 ⇒ 翻页不在这轮的能力边界里（§8.8 常数表）');
   assert.equal(url, searchRepoUrl(), '同一份常数两次拼出不同的串 ⇒ 界面那句 note 追不上真实查询');
   assert.ok(!/token/i.test(url), '令牌出现在 URL 拼接里（会留在代理与访问日志）');
+  // ★★ 本轮 ⑧-1 的第二把夹具：**逐字**串。参数化最容易改漂的不是新那一支，是"顺手把默认那一支也重排了一遍"——
+  //   上面那七条按常数断言，常数没变它们就全绿，而键序 / 编码方式 / 门槛写法变了它们照样绿。
+  //   ★ 这一条故意**把常数抄成字面**（本仓唯一一处允许抄这两个数的判据）：钉的就是"这一串一个字都没动"。
+  assert.equal(url, '/search/repositories?q=stars%3A%3E%3D100000&sort=stars&order=desc&per_page=30&page=1',
+    '默认那一串逐字变了 ⇒ 「全站高星」那一路（`all-stars.js` 无参调用）现在打的是另一条查询');
+  // ★ 空间那三种写法同形：不给 / 给空串 / 给纯空格都落回默认那一支（挡"框里没字"是路由层的 400，不是这里的责任）。
+  assert.equal(searchRepoUrl({}), url);
+  assert.equal(searchRepoUrl({ query: '' }), url);
+  assert.equal(searchRepoUrl({ query: '   ' }), url, '空格串被编码成 q=%20 发出去 ⇒ GitHub 回一句它不懂的错，界面上是假故障');
+  // ★ 递进来的别的键一概不看：只有 `query` 这一格有出口（否则 `per_page` 就能被调用端改成 100，note 那句"至多 30 行"成假话）。
+  assert.equal(searchRepoUrl({ per_page: 100, sort: 'forks', order: 'asc', q: 'x', stars: 1 }), url,
+    '默认那一支认了 `query` 之外的键 ⇒ 检索屏与明星屏之外的调用端可以改写这一发的形状');
 });
 
 check('真回包跑通：一发 200 ⇒ 30 行、位次 1..30 原样、repo 折小写而 name 保留 GitHub 的写法', async () => {

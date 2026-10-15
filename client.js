@@ -123,7 +123,7 @@ window.__ModuleLoader__.load({
      按钮按 border-box 算 28px ⇒ 内容档至少 28px，本列 36 − 左右内距 8 = 28 刚好；
    ★ 内距必须本条自己写：last-child 那条 14px 右内距与它同特异度，本条在后面才顶得住。 */
 .gt-tbl col.gt-tail,.gt-tbl th.gt-tail,.gt-tbl td.gt-tail{width:36px;padding:6px 4px;text-align:center}
-/* 收藏那枚 ☆/★：三处入口（三榜行尾 / 明星行尾 / 详情弹框头部）共用这一个类，亮灭只看 .on 一个位。
+/* 收藏那枚 ☆/★：四处入口（三榜行尾 / 明星行尾 / 详情弹框头部 / 检索行尾，第三十六轮起）共用这一个类，亮灭只看 .on 一个位。
    ★ 点它只改收藏 —— 不跳转、不开弹框、不滚动（§7 那条「选择无副作用」），榜面那枚还必须拦掉冒泡。 */
 .gt-fav{width:28px;height:22px;padding:0;line-height:1;border:1px solid var(--gt-line2);border-radius:6px;
   background:var(--gt-card);color:var(--gt-faint);font-size:13px;cursor:pointer;font-family:inherit}
@@ -231,6 +231,28 @@ window.__ModuleLoader__.load({
 .gt-count{min-width:34px;text-align:center;font-weight:600}
 .gt-input{font-family:inherit;font-size:12px;padding:4px 8px;border-radius:8px;border:1px solid var(--gt-line2);
   background:var(--gt-card);color:var(--gt-fg);min-width:0;width:160px}
+/* ★★ 检索那一屏那一条（第三十六轮 ⑬，10-14 用户「这个框框有点丑，优化一下」→ 定甲案）：
+   一个盒子一道边框，输入框与那枚按钮都不带自己的边框 ⇒ 焦点环画在外层这一道、跟着 10px 圆角走。
+   旧那一形有三处成因（原型 tmp/proto-r36-search-input.html 现量，1600px 视口）：① 全文件没有 :focus / ::placeholder / :disabled
+   任何一条 ⇒ 那三件交给浏览器默认，默认那条方环叠在 8px 圆角外面；② .gt-input(4px) 与 .gt-btn-main(5px) 的 padding 不同 ⇒ 26 vs 28px、顶边差 1px；
+   ③ .gt-q 钉死 max-width:420px 而那一行实宽 1487px ⇒ 右侧空 991px。三条都在下面这一套里收掉。
+   ⚠️ 不写 hover 那一档：本插件 :root 只映射了宿主 border-l1/l2 两档，不为一枚悬停新造色（要造先去 :root 按实映射造，别在规则里塞字面量）。
+   ⚠️ 在问期间那一态靠 .off 状态类（SearchCard 自己知道 asking），不靠 :has(.gt-go:disabled) —— 后者要 Chrome 105+，界面细节不该去赌宿主 Electron 的版本。
+   ⚠️ 那圈光晕的 color-mix 若不认，整条声明作废 ⇒ 只剩描边变蓝，不会画坏（宿主令牌表里没有 focus 那一档，全数过 app.asar 的 --dsw-alias-*）。 */
+.gt-search{display:flex;align-items:stretch;flex:1 1 260px;min-width:0;border:1px solid var(--gt-line2);
+  border-radius:10px;background:var(--gt-card);transition:border-color .12s,box-shadow .12s}
+.gt-search:focus-within{border-color:var(--gt-info);
+  box-shadow:0 0 0 3px color-mix(in srgb,var(--gt-info) 20%,transparent)}
+.gt-q{flex:1 1 auto;min-width:0;width:auto;border:none;background:transparent;outline:none;border-radius:10px;
+  font-family:inherit;font-size:13px;line-height:20px;padding:6px 4px 6px 11px;color:var(--gt-fg)}
+.gt-q::placeholder{color:var(--gt-faint)}
+.gt-search.off{background:var(--gt-soft)}
+.gt-search.off .gt-q{color:var(--gt-muted)}
+.gt-go{flex:0 0 auto;align-self:center;margin:2px 2px 2px 8px;white-space:nowrap;border:none;border-radius:8px;
+  font-family:inherit;font-size:12px;font-weight:500;line-height:18px;padding:5px 14px;cursor:pointer;
+  background:var(--gt-fg);color:var(--gt-card)}
+.gt-go:hover:not(:disabled){opacity:.86}
+.gt-go:disabled{background:var(--gt-line2);color:var(--gt-muted);cursor:default;opacity:1}
 .gt-saved{color:var(--gt-ok);font-size:12px}
 /* 页头回执：跑完一轮是「告知」不是「状态」，所以走中性档——
    绿留给设置卡的「已保存」这类成功回执，红只给真的坏了的事。 */
@@ -404,7 +426,9 @@ window.__ModuleLoader__.load({
       return `${word} · ${fmtAge(hit.addedAt, nowMs)}`;
     }
     /**
-     * 那一枚 ☆/★（第三十二轮）：三处入口共用同一个组件 ⇒ 状态、拦冒泡、发哪一发只有一处定义。
+     * 那一枚 ☆/★（第三十二轮）：四处入口（第三十六轮加检索屏那一处）共用同一个组件 ⇒ 状态、拦冒泡、发哪一发只有一处定义。
+     * ⚠️ 第三十六轮起 `onToggle` 的第三个入参是**这一块屏的语境**（`{screenId, seed}`）：组件自己不看它、原样递下去，
+     *   由 `toggleFav` 决定 body 里多不多那两格 ⇒ 四处入口各递自己那一屏的 id，出处这一件"只有浏览器知道的事"才有出处。
      * ★ `stopPropagation` 是必需的：榜面那一行的仓库名整块可点（开详情），点星只改收藏、不许顺手开弹框（§7 选择无副作用）。
      * ★ 组件自己不改状态：`on` 恒来自快照，点完等宿主追帧（`POST /api/fav` 的回执 + `update` 帧）把它刷成新的。
      */
@@ -902,6 +926,110 @@ window.__ModuleLoader__.load({
         h('p', { className: 'gt-note' }, f.note));
     }
 
+    /**
+     * 「检索」那一屏（第三十六轮 §8.18 ① 形状甲）：六列 `# / 仓库 / 描述 / 语言 / 累计 ★ / ☆`。
+     * ★ 顶上那一格是「一条盒子」不是「一个框 + 旁边一个按钮」（§8.18 ⑬）：`.gt-search` 画那一道边框，
+     *   里面的 `.gt-q` 与 `.gt-go` 都不带自己的边框 ⇒ 焦点环画在外层、跟着圆角走；宽度不设上限，那一行的余量归它。
+     *   ⚠️ 在问期间外层挂 `.off`（这一屏自己知道 `asking`），不靠 CSS 的 `:has()` 去猜。
+     * ★ 触发只有两处：回车与「搜一下」。敲进去的字不会自己变成请求（没有防抖、没有输入即发）——
+     *   那形状会在一个词里烧掉整池匿名额度（§8.18 ② 与 §0 本轮 ③）。
+     * ★ 一次性载荷：结果只活在 `view` 这一格 state 里。切页签会重建这棵子树 ⇒ 组件一卸载那批行就没了，
+     *   刷新面板与重启宿主同理（零入库在界面侧的兑现）。⚠️ 所以这一屏**不许**读 `snap.search.rows`
+     *   （快照那一格恒空，它装的是文案），也**不许**把词落进 localStorage（那是草稿，第二十九轮那条律继续生效）。
+     * ★ 屏上那六句状态、列名、缺位符全部吃载荷：客户端一个字都不补（§8 一份真相）。
+     *   唯一拿不到回执的那一会儿（`asking`，POST 还没回）念的是快照预带的那两句（`stateLabels.asking` / `askingNote`）。
+     *   ⚠️ 卡脚**只剩额度那一行**：原先那句长 note 已由用户 10-14 当场划掉（§8.18 ⑫），载荷里也没有 `note` 这一格了。
+     * ⚠️ 那一行末尾的 ☆ 递三样东西：屏 id `search` + 屏上那三格 `seed`（★、描述、语言）。宿主那边四道边界：
+     *   只在 add 且 from=search 时看、四路 first-hit 优先、脏值整格丢、`langColor` 这一路压根拿不到（§8.18 ⑥″）。
+     */
+    function SearchCard({ snap, onRepo, onAsk, onFav }) {
+      const base = snap?.search || null;
+      const [q, setQ] = useState('');
+      const [view, setView] = useState(null);
+      const [asking, setAsking] = useState(false);
+      const [fail, setFail] = useState('');
+      // 连点挡在 ref 上（与详情那三枚同一条律）：异步回调里读到的 state 可能还是旧的，而那一发花的是真额度。
+      // ⚠️ 这一把只是**界面侧的闸**，权威那把在宿主（`search-run.js` 的一发在飞）—— 别的窗口在飞时这里挡不住，
+      //   由路由回那一句 409，屏上念在 fail 那一格里。
+      const busy = useRef(false);
+      // 没问过 ⇒ 吃快照那份 idle 文案；问过一次 ⇒ 吃回执那一份（态、行、额度读数都在里面）。
+      const cur = view || base;
+
+      async function run() {
+        const word = String(q ?? '').trim();
+        if (!word || busy.current) return;
+        busy.current = true;
+        setAsking(true); setFail('');
+        try {
+          setView(await onAsk(word));
+        } catch (e) {
+          setFail(e?.message ?? String(e));
+        } finally {
+          busy.current = false;
+          setAsking(false);
+        }
+      }
+
+      if (!cur) {
+        return h('section', { className: 'gt-card' },
+          h('div', { className: 'gt-card-h' }, h('span', { className: 'gt-card-t' }, '检索')),
+          h('div', { className: 'gt-card-b' },
+            h('p', { className: 'gt-empty' }, '等待首帧：这一屏的文案与那一发都在宿主那边，浏览器不自己拼。')));
+      }
+
+      const stateLabel = asking ? cur.stateLabels?.asking : cur.stateLabel;
+      const stateNote = asking ? cur.askingNote : cur.stateNote;
+      // ★ 只有 `ok` 那一批才有行可摆：`empty` 是答案、`error` 是没答案，两者都不摆表（§8.18 ③ 那句「不摆空表」）。
+      const rows = !asking && cur.state === 'ok' ? (cur.rows || []) : [];
+      const missing = cur.missingCell || '';
+      const cols = cur.cols || {};
+      const colProps = [{ style: { width: 46 } }, { className: 'gt-col-repo' }, { className: 'gt-col-desc' },
+        { style: { width: 112 } }, { style: { width: 64 } }, { className: 'gt-tail' }];
+      const headCells = [['gt-r', '#'], ['', '仓库'], ['', '描述'], ['', '语言'], ['gt-r', cols.stars], ['gt-tail', cols.fav]];
+      return h('section', { className: 'gt-card' },
+        h('div', { className: 'gt-card-h' },
+          h('span', { className: 'gt-card-t' }, '检索'),
+          stateLabel ? h('span', { className: 'gt-card-n' }, stateLabel) : null),
+        h('div', { className: 'gt-card-b' },
+          h('div', { className: 'gt-bar' },
+            h('div', { className: asking === true ? 'gt-search off' : 'gt-search' },
+              h('input', {
+                className: 'gt-q', type: 'text', value: q, placeholder: 'owner/name 或关键词',
+                disabled: asking === true,
+                // 只有回车发那一发：输入法确认候选词的那一次回车不带 isComposing（那还打在组词中间），拦住它
+                onKeyDown: (e) => { if (e.key === 'Enter' && !e.isComposing) { e.preventDefault(); run(); } },
+                onChange: (e) => setQ(e.target.value),
+              }),
+              h('button', { className: 'gt-go', disabled: asking === true || String(q ?? '').trim() === '', onClick: run }, '搜一下'))),
+          h('p', { className: 'gt-sub' }, stateNote),
+          fail ? h('div', { className: 'gt-notice gt-notice-err' }, `那一发没送出去：${fail}`) : null,
+          rows.length
+            ? h('div', { className: 'gt-scroll' }, h('table', { className: 'gt-tbl' },
+                h('colgroup', null, colProps.map((p, i) => h('col', { key: i, ...p }))),
+                h('thead', null, h('tr', null, headCells.map(([cls, label], i) => h('th', { key: i, className: cls || undefined }, label)))),
+                h('tbody', null, rows.map((r) => h('tr', { key: r.repo },
+                  h('td', { className: 'gt-r' }, h(RankBadge, { rank: r.rank })),
+                  h('td', null, h('a', { className: 'gt-repo', ...repoLinkProps(r.repo, onRepo) }, r.name || r.repo)),
+                  // ★ `desc` 恒是 GitHub 那句原文，中文只多开一格：没命中就念原文，不给缺位符（§8.18 ⑤）
+                  descCell(r.desc, r.descZh, missing),
+                  // 色点在 search 这一路压根没有（回包只给 `language`）⇒ 一律走 CSS 那一份灰，不另立一份语言色表
+                  h('td', null, r.lang
+                    ? h('span', { className: 'gt-lang' }, h('i', null), h('span', null, r.lang))
+                    : h('span', { className: 'gt-flat' }, missing)),
+                  h('td', { className: 'gt-r gt-num' }, Number.isFinite(r.stars) ? fmtCount(r.stars) : missing),
+                  h('td', { className: 'gt-tail' }, h(FavStar, {
+                    repo: r.repo,
+                    on: r.favSaved === true,
+                    onToggle: (repo, action) => onFav(repo, action, {
+                      screenId: 'search',
+                      // ★ 屏上那一刻的那三格（宿主四路全空时才用，且只认这三格 —— `name` / `langColor` 递了也不看）
+                      seed: { desc: r.desc, lang: r.lang, stars: r.stars },
+                    }),
+                  })))))))
+            : null,
+          cur.statLine ? h('p', { className: 'gt-note gt-num' }, cur.statLine) : null));
+    }
+
     /** 跨榜同现：吃同一次检查的三张榜，零额外请求。 */
     function CrossCard({ snap, onRepo }) {
       const cross = snap?.cross || { rising: [], cooling: [] };
@@ -1162,12 +1290,16 @@ window.__ModuleLoader__.load({
             : h('p', { className: 'gt-empty' }, '当前快照没有带回能力表')));
     }
 
-    /** 页签表：只放界面结构；三个榜签的标题吃载荷 boardLabels，客户端不另立一份榜名。 */
+    /** 页签表：只放界面结构；三个榜签的标题吃载荷 boardLabels，客户端不另立一份榜名。
+     *  ★ 第 9 枚 `检索`（第三十六轮 §8.18 ① 形状甲）排在 `收藏` 之后、`变化记录` 之前：
+     *    那一屏的语义是"我问了 GitHub 一个词"，与「明星仓库」（本机攒下的那批高星）、「收藏」（我挑过的）都不同源。
+     *    ⚠️ 它**不进** `TabBar` 的计数：载荷 `snap.search` 恒零行（零入库的必然结果），摆一枚 0 就是把"没库存"演成"这一档坏了"。 */
     const TABS = [
       { id: 'overview', label: '总览' },
       ...BOARDS().map((b) => ({ id: b, label: boardLabel(b) })),
       { id: 'stars', label: '明星仓库' },
       { id: 'fav', label: '收藏' },
+      { id: 'search', label: '检索' },
       { id: 'events', label: '变化记录' },
       { id: 'settings', label: '设置' },
     ];
@@ -1516,21 +1648,41 @@ window.__ModuleLoader__.load({
       }
 
       /**
-       * 那一枚 ☆/★ 发的那一发（§8.15 ⑧）：body 只带 `{repo, action}` —— 快照那五格由宿主在写那一刻自己取，
-       * 界面上那颗星按下去**不许**把浏览器看到的星数写进库里（那就是第二份星数）。
-       * ★ 失败不摆横幅（本轮裁定）：亮与灭恒来自快照，这一发没成屏上就不会变，而那本身就是回执；
+       * 那一枚 ☆/★ 发的那一发（§8.15 ⑧ + 第三十六轮 §8.18 ⑥ 改判）：
+       * · body 基础两格 `{repo, action}` 不变；
+       * · ★ `action === 'add'` 时多一格 `from` = **这一块屏的 id**（封闭六枚，宿主校验、越界 400 并把合法值念出来）。
+       *   第三十二轮那句"浏览器只递 `{repo, action}`"里的"只"字本轮由用户亲手松开一格，且只松这一格：
+       *   出处 = 只有浏览器知道的事实（在哪儿点的），读数 = 只有宿主知道的事实（那几格从本地表派生）。
+       * · ★ `from === 'search'` 时再多一格 `seed`（屏上那一刻的 `desc`/`lang`/`stars`）—— 检索结果零入库，
+       *   那一屏收进来的项目本机可能一个读数都没有；宿主那边四道边界（只看那一支、四路 first-hit 优先、脏值整格丢、`langColor` 恒不收）。
+       * · `remove` 那一支**不带 `from`**（删行没有出处可写，收藏那一屏那枚恒走这一支）。
+       * ★ 失败不摆横幅：亮与灭恒来自快照，这一发没成屏上就不会变，而那本身就是回执；
        *   唯一现实的失败面是「存储不可用」，那一句在收藏那一屏的卡体里预先念过（`fav.noStoreNote`）。
        */
-      async function toggleFav(repo, action) {
+      async function toggleFav(repo, action, { screenId = '', seed = null } = {}) {
         if (!repo || !action) return;
+        const body = { repo, action };
+        if (action === 'add') {
+          body.from = screenId;
+          if (screenId === 'search' && seed) body.seed = seed;
+        }
         try {
           const r = await api('/fav', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ repo, action }),
+            body: JSON.stringify(body),
           });
           if (r && r.fav) setSnap((p) => (p ? { ...p, fav: r.fav } : p));
         } catch { /* 见上面那条：这一屏没有第二处可以替它说的话 */ }
+      }
+
+      /** 检索那一问（§8.18 ④）：一次性载荷，回执就是那一屏的全部原料 —— ★ 不追帧、不写库，`setSnap` 一次都不碰。 */
+      async function askSearch(query) {
+        return api('/search', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ query }),
+        });
       }
 
       const settings = h(SettingsCard, {
@@ -1542,11 +1694,17 @@ window.__ModuleLoader__.load({
         onSave: (p) => savePrefs(p),
       });
       const onRepo = (repo) => { loadDetail(repo); };
+      // ★ 四处 ☆ 入口各自递自己那一屏的 id（§8.18 ⑥）：id 只在路上存在、不落库，宿主用 `FAV_FROM_BY_SCREEN` 翻成词。
+      //   `收藏` 那一屏那一枚恒是 remove ⇒ 直接交 `toggleFav`，第三个入参不给 ⇒ body 里没有 `from`。
+      const onFavBoard = (repo, action) => toggleFav(repo, action, { screenId: tab });
+      const onFavStars = (repo, action) => toggleFav(repo, action, { screenId: 'stars' });
+      const onFavDetail = (repo, action) => toggleFav(repo, action, { screenId: 'detail' });
       let panel;
       if (tab === 'settings') panel = h('div', { className: 'gt-panel' }, settings, h(EnvCard, { snap }));
-      else if (BOARDS().includes(tab)) panel = h(BoardCard, { snap, board: tab, onRepo, onFav: toggleFav });
-      else if (tab === 'stars') panel = h(StarsCard, { snap, saving, onRepo, onSave: (p) => savePrefs(p), onFav: toggleFav });
+      else if (BOARDS().includes(tab)) panel = h(BoardCard, { snap, board: tab, onRepo, onFav: onFavBoard });
+      else if (tab === 'stars') panel = h(StarsCard, { snap, saving, onRepo, onSave: (p) => savePrefs(p), onFav: onFavStars });
       else if (tab === 'fav') panel = h(FavCard, { snap, onRepo, onFav: toggleFav });
+      else if (tab === 'search') panel = h(SearchCard, { snap, onRepo, onAsk: askSearch, onFav: toggleFav });
       else if (tab === 'events') panel = h(EventsCard, { snap });
       else panel = h(OverviewTab, { snap, conn, onGo: goTab, onRepo });
 
@@ -1561,7 +1719,7 @@ window.__ModuleLoader__.load({
               detail,
               manual,
               fav: snap?.fav,
-              onFav: toggleFav,
+              onFav: onFavDetail,
               onManual: runManual,
               onClose: closeDetail,
               onRefresh: () => loadDetail(detail.repo, { refresh: true, keep: true }),
@@ -1596,7 +1754,7 @@ window.__ModuleLoader__.load({
       favPick, favMapOf, favSavedText, FavStar,
       components: {
         Header, TabBar, OverviewTab, BoardMini, StatusCard, BoardCard, CrossCard,
-        EventsCard, SettingsCard, EnvCard, RankBadge, DetailModal, GhTrendingPage, StarsCard, FavCard,
+        EventsCard, SettingsCard, EnvCard, RankBadge, DetailModal, GhTrendingPage, StarsCard, FavCard, SearchCard,
       },
     };
     // 宿主 ModuleLoader 吃的是 factory 的**返回值**当模块导出：

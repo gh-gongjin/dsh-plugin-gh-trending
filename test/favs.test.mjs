@@ -17,7 +17,7 @@ import {
   BOARDS, BOARD_LABELS,
   FAV_SORTS, FAV_DEFAULT_SORT,
   FAV_STAMP_LABELS, FAV_COL_STARS, FAV_NOTE, FAV_EMPTY_NOTE, FAV_NO_STORE_NOTE,
-  FAV_FROM_STARS, FAV_FROM_DETAIL, FAV_FROM_SOURCES, favFromCell, STARS_MISSING_CELL,
+  FAV_FROM_STARS, FAV_FROM_DETAIL, FAV_FROM_SEARCH, FAV_FROM_SOURCES, favFromCell, STARS_MISSING_CELL,
 } from '../lib/domain.js';
 
 const T = 1_760_000_000_000;
@@ -154,8 +154,8 @@ check('出处为空 ⇒ fromCell 给空串（界面整枚不摆，不自造「�
   assert.equal(v.rows[0].from, '', '缺位给空串而不是 "undefined" —— 客户端搬进 tag 就是屏上一个词');
 });
 
-check('五档出处都能拼成句（前三档由 BOARDS + BOARD_LABELS 派生，后两档是明星与详情）', () => {
-  assert.deepEqual(FAV_FROM_SOURCES, [...BOARDS.map((b) => BOARD_LABELS[b]), FAV_FROM_STARS, FAV_FROM_DETAIL]);
+check('六档出处都能拼成句（前三档由 BOARDS + BOARD_LABELS 派生，后三档是明星、详情与检索）', () => {
+  assert.deepEqual(FAV_FROM_SOURCES, [...BOARDS.map((b) => BOARD_LABELS[b]), FAV_FROM_STARS, FAV_FROM_DETAIL, FAV_FROM_SEARCH]);
   for (const one of FAV_FROM_SOURCES) assert.equal(favFromCell(one), `来自 ${one}`);
 });
 

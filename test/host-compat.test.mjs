@@ -24,7 +24,8 @@ import { BOARDS, BOARD_LABELS, BOARD_ADDED_LABELS, CHECK_INTERVALS, CHECK_INTERV
   //   旧的那份只列三家翻译的 ⇒ 拿它当"全部密钥"就漏扫了令牌（手抄必漏，见 hc-0）。
   PREF_CRED_FIELDS, PREF_SECRET_KEYS,
   // ★ 第三十二轮（收藏 §8.15）：那一屏的出处枚举与那句故障话都在 domain，用例不抄中文。
-  FAV_FROM_DETAIL, FAV_NO_STORE_NOTE } from '../lib/domain.js';
+  // ★ 第三十六轮（检索 §8.18）：第六档「检索」同样从 domain 取 —— 这里手抄 `'检索'` 就是第二份真相。
+  FAV_FROM_DETAIL, FAV_FROM_SEARCH, FAV_NO_STORE_NOTE } from '../lib/domain.js';
 import { GHT_DOMAIN } from '../lib/domain.js';
 // ★ 第三十一轮：整个模块当命名空间再引一次 —— 「那个撤掉的常数还在不在导出里」只能用这种问法（`in`），
 //   具名 import 一个不存在的导出会在装载期就炸，炸在别的用例头上、报的不是这一笔账。
@@ -705,8 +706,10 @@ check('hc-22 ★第八张表的接线（第三十二轮收藏）：真装配点�
   await h(makeReq({
     method: 'POST',
     url: `${ROUTE_PREFIX}/api/fav`,
-    // ★ 故意多递两格：body 只认 `{repo, action}`，这两格一个字都不许进库
-    body: { repo: 'Vitejs/Vite', action: 'add', stars: 999, desc: '浏览器自己给的描述' },
+    // ★ 故意多递两格：body 认 `{repo, action, from, seed}` 四格，而 `stars` / `desc` 那两格**不在白名单上**，
+    //   一个字都不许进库（★ 第三十六轮松的那一格只松在 `seed` 那一个对象上，而这一发压根没给 `seed`）。
+    //   `from` 递的是**屏 id**：这一发钉的是"检索那一屏 + 本机四路全空 + 没 seed"那一形（§8.18 ⑥″ 第 3 行）。
+    body: { repo: 'Vitejs/Vite', action: 'add', from: 'search', stars: 999, desc: '浏览器自己给的描述' },
   }), post);
   await flush(20);
   assert.equal(post.statusCode, 200, JSON.stringify(post.json()));
@@ -721,7 +724,8 @@ check('hc-22 ★第八张表的接线（第三十二轮收藏）：真装配点�
   assert.equal(s.fav.rows[0].repo, 'vitejs/vite');
   assert.equal(s.fav.rows[0].stars, null, '浏览器递的星数没落库（落了就是第二份星数）');
   assert.equal(s.fav.rows[0].desc, '', '浏览器递的描述同样没落库');
-  assert.equal(s.fav.rows[0].from, FAV_FROM_DETAIL, '本机四路都没有那一行的读数 ⇒ 出处落「详情」（派生顺序在宿主）');
+  assert.equal(s.fav.rows[0].from, FAV_FROM_SEARCH,
+    '★ 第三十六轮改判一：出处吃浏览器递来的屏 id（以前这一形由宿主推到「详情」）⇒ 真装配那一路也认第六档，且库里落的是**词**不是 id');
 
   // ② teardown 把八张表都交还：第八路没进 close 名单 ⇒ 引用计数不归零，域留在设施里（真机 reload 撞 already-open）
   teardown();
@@ -753,7 +757,9 @@ check('hc-22 ★第八张表的接线（第三十二轮收藏）：真装配点�
   assert.deepEqual(f2.rows, []);
   assert.equal(f2.noStoreNote, FAV_NO_STORE_NOTE, '那一句整句从 domain 来，界面不自己圆');
   const pres = makeRes();
-  await h2(makeReq({ method: 'POST', url: `${ROUTE_PREFIX}/api/fav`, body: { repo: 'a/b', action: 'add' } }), pres);
+  // ★ `from` 必给：闸门顺序是 action → from → repo → 装配，少了 `from` 这一发拿 400（参数错）而不是 501（仓储坏了），
+  //   那条"界面那枚不变"的判据就悄悄没牙了。
+  await h2(makeReq({ method: 'POST', url: `${ROUTE_PREFIX}/api/fav`, body: { repo: 'a/b', action: 'add', from: 'detail' } }), pres);
   await flush(10);
   assert.equal(pres.statusCode, 501, '存储坏了点那一枚该 501：界面那枚不变，就是这一发的回执');
   td2();
@@ -869,6 +875,47 @@ check('hc-24 ★「这一轮」那一列撤得干净（第三十五轮）：那�
   for (const k of ['boards', 'starsRows', 'allStarsRows']) {
     assert.ok(synthKeys.includes(k), `合成样本里的「${k}:」那一格扫不出来 ⇒ ② 那条键表扫描是空转，复辟喂料拦不住`);
   }
+});
+
+/**
+ * 合成样本（hc-25 ②）：检索那一路**自己去取令牌、自己拼出网口**那一种写法。
+ * ★ 正样本存在的理由同 hc-8 / hc-23：扫不到它的正则就是扫空气，"这一路不认令牌"会变成注释里的一句话。
+ */
+const SYNTHETIC_SEARCH_TOKEN_WIRE = `
+export function createSearchRunService({ getGhToken, favStore, llm }) {
+  const url = 'https://api.github.com/search/repositories?q=';
+  return { ask: async (q) => {
+    const res = await fetch(url + q, { headers: { authorization: 'Bearer ' + getGhToken() } });
+    favStore.put(res); hub.broadcast('update'); return llm.translate(q);
+  } };
+}
+`;
+
+check('hc-25 ★检索那一屏的接线（第三十六轮 §8.18 ⑧ 第 6 行）：编排那一路不认令牌、不拼 URL、不碰表、不广播，令牌闭包在装配点绑好', () => {
+  // ① 新文件真在扫描面里（HOST_FILES 是 walk('lib') 动态得到的 ⇒ 改名或挪走，下面那几条当场变成给空气立的牌坊）。
+  assert.ok(HOST_FILES.includes('lib/services/search-run.js'),
+    'lib/services/search-run.js 没进扫描面 ⇒ hc-21 那份"认得 ghToken 的只有三份文件"的名单对它等于没扫');
+  const code = codeOf('lib/services/search-run.js');
+  const BANNED = [
+    [/\bghToken\b|getGhToken/i, '这一路自己去认令牌键名 ⇒ 令牌多一个出口（hc-21 那份逐字名单要红）'],
+    [/authorization|Bearer/i, '这一路自己造请求头 ⇒ 出网口不再只有 repo.js 那条私有 get()'],
+    [/api\.github\.com|https:\/\//, '这一路自己拼 URL ⇒ 那一发的参数有了第二处出处'],
+    [/\bfavStore\b|transStore|\bput\(|broadcast\(/, '这一路碰了存储或广播 ⇒ 零入库那一裁定在结构上没落地'],
+    [/\bllm\b|translate|fetch\s*\(/, '这一路接了现译或自己 fetch ⇒ 出网账与补译集合都多一笔没人记的'],
+  ];
+  for (const [re, why] of BANNED) {
+    assert.ok(re.test(SYNTHETIC_SEARCH_TOKEN_WIRE), `扫描面里有一条正则连合成样本都扫不到（${re}）⇒ 这条判据是空转`);
+    assert.equal(re.test(code), false, `检索编排那一路的源码里还留着「${re}」那一形：${why}`);
+  }
+  // ② 它吃的是装配点绑好的那颗闭包（★ 令牌键名只许在 domain/index/repo 三处，门面这层本轮新增那一发也不点名）。
+  const apiSrc = codeOf('lib/api.js');
+  assert.match(apiSrc, /fetchBatch:\s*deps\.searchFetcher/,
+    'lib/api.js 里那一发不是吃已装配的闭包 ⇒ 令牌就得在这一层现取，hc-21 那条律本轮破在检索那一屏');
+  assert.equal((apiSrc.match(/\bghToken\b/g) || []).length, 0, 'lib/api.js 点到了令牌键名（本轮新增那一发把出口开到了门面）');
+  // ③ hc-21 那份逐字名单本轮不动：新文件不许挤进去，编排那一路也不许被"顺带"扫到。
+  const readers = HOST_FILES.filter((f) => /\bghToken\b/.test(codeOf(f)));
+  assert.deepEqual(readers, ['index.js', 'lib/domain.js', 'lib/services/repo.js'],
+    `认得 ghToken 的文件变成了 ${readers.join(', ')} ⇒ 本轮要么多开了一个出口，要么漏接了一路`);
 });
 
 await runAll('host-compat');

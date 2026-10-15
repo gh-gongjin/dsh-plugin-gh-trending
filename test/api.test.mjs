@@ -33,6 +33,13 @@ import { BOARDS, DEFAULT_PREFS, TRENDING_SOURCE_NOTE, LANG_CHECK, TRANSPORT_HINT
   MANUAL_ACTIONS, MANUAL_ACTION_KIND, MANUAL_ACTIONS_SECTION, MANUAL_RUN_NOTE, MANUAL_GATE_NOTES, manualFailNote,
   // 第三十二轮：收藏那一路的名单与出处档从 domain 取（在这里抄 `'add | remove'` 或「明星仓库」就是第二份真相）。
   FAV_ACTIONS, FAV_FROM_STARS, FAV_FROM_DETAIL, FAV_NO_STORE_NOTE, FAV_EMPTY_NOTE, FAV_NOTE, BOARD_LABELS,
+  // ★ 第三十六轮：☆ 那一屏的**屏 id 白名单**与 `屏 id → 词` 那张表也从 domain 取（在测试里写死 `'daily'` 或自己拼「检索」
+  //   就是第二份真相 —— 哪天加屏或改档名，用例照样绿而路由挡错人）。
+  FAV_SCREEN_IDS, FAV_FROM_BY_SCREEN, FAV_FROM_SEARCH, FAV_SEED_KEYS, FAV_SEED_TEXT_MAX,
+  // ★ 第三十六轮：检索那一路的边界与六态句子同样从 domain 取（在测试里手抄 256 或那句「额度用尽」就是第二份真相）。
+  SEARCH_QUERY_MAX, SEARCH_STATES, SEARCH_STATE_LABELS, searchStateLine, SEARCH_COL_STARS, SEARCH_COL_FAV,
+  // ★ 第三十六轮：「八张表逐张写次数为 0」那条判据吃的是**表名单自己**（在这里抄八个名字，加第九张表就漏扫）。
+  GHT_DOMAIN,
 } from '../lib/domain.js';
 import { DESC_ZH_ROWS, DESC_ZH_LABEL, DESC_ZH_NOTE, descZhFor } from '../lib/desc-zh.js';
 // ★ 第二十三轮：明星那一屏的装配判据吃的是**同一个纯视图**（`lib/stars.js`）。
@@ -73,7 +80,7 @@ const searchBad = (over = {}) => ({
   ok: false, errKey: 'rate_limited', errText: '限额用尽（403，重置于 2026/10/9 04:38:14）', transport: false, ...over,
 });
 
-async function mkApi({ prefs = {}, states = {}, events = [], checkImpl, route = null, repoService = null, translator = null, webTranslator = null, searchFetcher = null, seenStore = null, favStore = null, noFav = false, now = () => 7777 } = {}) {
+async function mkApi({ prefs = {}, states = {}, events = [], checkImpl, route = null, repoService = null, translator = null, webTranslator = null, searchFetcher = null, noSearchFetcher = false, seenStore = null, favStore = null, noFav = false, now = () => 7777 } = {}) {
   const facility = makeFakeFacility();
   // ★ 第二十二轮把 `warn` 从裸数组改成"可调用的假 logger"：榜面补译的失败与降级全走 `logger.warn`，
   //   上一版这里是 `{warn: []}` ⇒ 代码里的 `logger?.warn?.()` 直接 TypeError，测试崩在用例断言之前。
@@ -111,6 +118,9 @@ async function mkApi({ prefs = {}, states = {}, events = [], checkImpl, route = 
   const searchCalls = [];
   const innerSearchFetcher = searchFetcher ?? (async () => searchOk());
   const countedSearchFetcher = async (...args) => { searchCalls.push(args); return innerSearchFetcher(...args); };
+  // ★ 第三十六轮：`noSearchFetcher` 走"装配层没接那颗闭包"那一支（裸宿主）⇒ `POST /api/search` 回 501 那句实话，
+  //   而不是造一枚调到 undefined 的 runner（那会在按下「搜一下」的那一刻炸）。
+  const wiredSearchFetcher = noSearchFetcher ? null : countedSearchFetcher;
   const handler = createApiHandler({
     check: fakeCheck,
     stateStore: stores.state,
@@ -125,7 +135,7 @@ async function mkApi({ prefs = {}, states = {}, events = [], checkImpl, route = 
     //   两个都可换桩：`noFav: true` 走"装配层没给仓储"那一支（501），`favStore: {available:false,…}` 走"存储坏了"那一支。
     favStore: noFav ? null : (favStore ?? stores.fav),
     repoStore: stores.repo,
-    searchFetcher: countedSearchFetcher,
+    searchFetcher: wiredSearchFetcher,
     getPrefs: () => prefsView,
     repoService,
     translator,
@@ -2056,18 +2066,21 @@ check('readBody：拼流、超大体拒收、__parsedBody 逃生舱只给测试'
 check('路由表本身：登记的方法与闸门口径一致（写全闸 + 花配额的 GET 也闸，纯读面板的 GET 不闸）', () => {
   assert.deepEqual(Object.keys(ROUTES).sort(), [
     'GET /api/events', 'GET /api/prefs', 'GET /api/repo', 'GET /api/snapshot', 'GET /api/stream',
-    'POST /api/check', 'POST /api/fav', 'POST /api/prefs', 'POST /api/repo/readme',
+    'POST /api/check', 'POST /api/fav', 'POST /api/prefs', 'POST /api/repo/readme', 'POST /api/search',
   ]);
   assert.ok(Object.keys(ROUTES).every((k) => k.startsWith('GET ') || k.startsWith('POST ')));
   const gated = Object.entries(ROUTES).filter(([k, v]) => v.loopback === true || k.startsWith('POST ')).map(([k]) => k).sort();
-  assert.deepEqual(gated, ['GET /api/repo', 'POST /api/check', 'POST /api/fav', 'POST /api/prefs', 'POST /api/repo/readme'],
-    '闸的是"会替调用方动东西"的入口：写操作 + 会烧匿名配额的详情读');
+  assert.deepEqual(gated, ['GET /api/repo', 'POST /api/check', 'POST /api/fav', 'POST /api/prefs', 'POST /api/repo/readme', 'POST /api/search'],
+    '闸的是"会替调用方动东西"的入口：写操作 + 会烧匿名配额的详情读与检索');
   // ★ 第二十八轮那一条 POST 是「替用户跑一整趟出网（最多 40 发翻译）」的入口 ⇒ 它自己就得标 loopback，
   //   不许只靠上面那条「是 POST 就闸」的顺带规则：那条口径哪天改，这一发就从别的机器也能点了。
   assert.equal(ROUTES['POST /api/repo/readme'].loopback, true, '闸门口径要写在路由上，不写在方法名前缀里');
   // ★ 第三十二轮的收藏写口同理，而且理由**不同一条**：它不花上游配额，它改的是本机库存 ——
   //   放给局域网邻居点，等于让别人替我改我这台的收藏清单（写在路由上，不写在方法名前缀里，同上一条）。
   assert.equal(ROUTES['POST /api/fav'].loopback, true, '写本机库的入口也要自己标闸，不靠"是 POST"那条顺带规则');
+  // ★ 第三十六轮的检索路由自己标闸，理由又换了一条：这一路**烧的是本机那个匿名 search 池**（实测 10 次/小时，
+  //   与「全站高星」同一口），放给局域网邻居点，等于让别人替我把这一小时的额度烧光。
+  assert.equal(ROUTES['POST /api/search'].loopback, true, '花配额的入口要自己标闸，不靠"是 POST"那条顺带规则');
   const unGated = Object.keys(ROUTES).filter((k) => !k.startsWith('POST ') && ROUTES[k].loopback !== true);
   assert.deepEqual(unGated.sort(), ['GET /api/events', 'GET /api/prefs', 'GET /api/snapshot', 'GET /api/stream'],
     '纯读面板的不闸，真机排障要从别机看得清');
@@ -2083,7 +2096,7 @@ async function writeRepoCache(h, repo, over = {}) {
   });
 }
 
-check('★ POST /api/fav：action 只认那两档，越界 400 且把合法值念出来；坏 repo 400；仓储没装配是 501 —— 全部一行不落库', async () => {
+check('★ POST /api/fav：action 与 from 各是封闭枚举，越界 400 且把合法值念出来；坏 repo 400；仓储没装配是 501 —— 全部一行不落库', async () => {
   const h = await mkApi();
   for (const bad of ['', 'ADD', 'add;', 'favorite', 'del']) {
     const { res } = await call(h, post('/api/fav', { repo: 'a/b', action: bad }));
@@ -2093,15 +2106,31 @@ check('★ POST /api/fav：action 只认那两档，越界 400 且把合法值�
       assert.ok(res.json().error.message.includes(legal), `越界时要把合法值念出来（同 translateEngine 那一条）：缺 ${legal}`);
     }
   }
+  // ★ 第三十六轮改判一：`from` 是**第二把封闭枚举**，认不出的屏 id 进不来（作废的那一支：以前由宿主猜出处）。
+  //   ⚠️ 名单是**大小写敏感**的那一份（`daily` ≠ `DAILY`），但首尾空白照 `trim` —— 那是路由的口径，用例照它写。
+  for (const bad of ['', 'DAILY', 'daily;', 'board', '收藏', 'setting']) {
+    const { res } = await call(h, post('/api/fav', { repo: 'a/b', action: 'add', from: bad }));
+    assert.equal(res.statusCode, 400, `from=${JSON.stringify(bad)} 该当场拒：出处写错那一格，那一行永远念不回它真正的来路`);
+    assert.equal(res.json().error.code, 'INVALID_PARAM');
+    for (const legal of FAV_SCREEN_IDS) {
+      assert.ok(res.json().error.message.includes(legal), `越界时要把合法屏 id 全念出来：缺 ${legal}`);
+    }
+  }
+  // ★ 只有 `add` 问出处（`remove` 删行，没有出处可写 ⇒ 那一支连 `from` 都不看，缺位也合法）。
+  const removedNoFrom = await call(h, post('/api/fav', { repo: 'a/b', action: 'remove' }));
+  assert.equal(removedNoFrom.res.statusCode, 200, '移出不带 from 是合法的一发：挡它就是把"删行"当成"写行"');
+  assert.equal((await call(h, post('/api/fav', { repo: 'a/b', action: 'remove', from: '乱七八糟' }))).res.statusCode, 200,
+    '移出的那一支连脏 from 都不看');
+
   for (const badRepo of [undefined, '', '   ', 'just-a-name', 'a/b/c', 'https://github.com/a/b']) {
-    const { res } = await call(h, post('/api/fav', { repo: badRepo, action: 'add' }));
+    const { res } = await call(h, post('/api/fav', { repo: badRepo, action: 'add', from: 'detail' }));
     assert.equal(res.statusCode, 400, `repo=${JSON.stringify(badRepo)} 不是 owner/name`);
   }
-  assert.deepEqual(await h.__stores.fav.list(), [], '闸门挡掉的那些一行都不该落库');
+  assert.deepEqual(await h.__stores.fav.list(), [], '闸门挡掉的那些一行都不该落库（含上面那两发 remove：删不存在的行也不产生行）');
   assert.equal(h.__searchCalls.length, 0, '拒掉的请求连明星那一批都不该读（更不该出网）');
 
   const bare = await mkApi({ noFav: true });
-  const notAssembled = await call(bare, post('/api/fav', { repo: 'a/b', action: 'add' }));
+  const notAssembled = await call(bare, post('/api/fav', { repo: 'a/b', action: 'add', from: 'detail' }));
   assert.equal(notAssembled.res.statusCode, 501, '仓储没装配要 501，不是 500 也不是"假装收藏成功了"');
   assert.equal(notAssembled.res.json().error.code, 'GHT_RECORDS_UNAVAILABLE');
 });
@@ -2109,29 +2138,46 @@ check('★ POST /api/fav：action 只认那两档，越界 400 且把合法值�
 check('★ POST /api/fav 从别机来是 403：这一路不花上游配额，它改的是**本机库存** —— 放给邻居点等于让别人替我收藏', async () => {
   const h = await mkApi();
   const lan = { remoteAddress: '192.168.1.20' };
-  const { res } = await call(h, post('/api/fav', { repo: 'a/b', action: 'add' }, lan));
+  const { res } = await call(h, post('/api/fav', { repo: 'a/b', action: 'add', from: 'detail' }, lan));
   assert.equal(res.statusCode, 403);
   assert.equal(res.json().error.code, 'FORBIDDEN');
   assert.deepEqual(await h.__stores.fav.list(), [], '挡在闸门上，不是挡在仓储之后');
   // XFF 里混进公网跳点也不算本机（同 isLoopback 那一条判据的口径）
-  const xff = makeReq({ method: 'POST', url: `${ROUTE_PREFIX}/api/fav`, body: { repo: 'a/b', action: 'add' },
+  const xff = makeReq({ method: 'POST', url: `${ROUTE_PREFIX}/api/fav`, body: { repo: 'a/b', action: 'add', from: 'detail' },
     socket: { remoteAddress: '127.0.0.1' }, headers: { 'x-forwarded-for': '203.0.113.9, 127.0.0.1' } });
   assert.equal((await call(h, xff)).res.statusCode, 403);
 });
 
-check('★ body 只认 {repo, action}：客户端多递的 stars / desc / lang / from 一个字都进不了库（那五格由宿主派生）', async () => {
+check('★ body 认 {repo, action, from, seed} 四格：客户端多递的 stars / desc / lang / name / addedAt 一个字都进不了库（那五格由宿主派生）', async () => {
   const h = await mkApi({ states: { daily: stateRow('daily', [crow('a/b', 3, { name: 'A/B', stars: 77, desc: '榜上那句', lang: 'Rust' })]), weekly: null, monthly: null } });
-  await call(h, post('/api/fav', { repo: 'a/b', action: 'add', stars: 999999, desc: '客户端自己写的描述', lang: 'Brainfuck', from: '详情', addedAt: 1, name: '假名字' }));
+  // `from:'daily'` 是**合法的屏 id**（那一发就当它是从日榜那一屏点的），脏的是后面那五格自由串。
+  await call(h, post('/api/fav', { repo: 'a/b', action: 'add', from: 'daily', stars: 999999, desc: '客户端自己写的描述', lang: 'Brainfuck', addedAt: 1, name: '假名字', at: 2 }));
   const row = await h.__stores.fav.get('a/b');
   assert.equal(row.stars, 77, '库里那格吃的是本地读数：让浏览器写 stars ⇒ 榜面刷一次就多了个百万星的收藏');
   assert.equal(row.desc, '榜上那句');
   assert.equal(row.lang, 'Rust');
   assert.equal(row.name, 'A/B');
-  assert.equal(row.from, BOARD_LABELS.daily, '出处由宿主判：客户端递 `from` 就是第二份榜况');
+  assert.equal(row.from, BOARD_LABELS.daily, '出处只认屏 id 翻成的那一个词（`from` 走白名单，不是自由串）');
   assert.notEqual(row.addedAt, 1, '收藏时刻是宿主那一刻的时钟，不是请求体里带来的');
+  assert.equal('at' in row, false, '认不出的键连落库的机会都没有（白名单在写侧，不在 schema 侧兜着）');
+  // ★ `seed` 在**非 search 那一屏**被整格丢掉（改判二那一道边界：四路里前三路以外的屏，行本来就在库里）。
+  assert.equal(row.desc, '榜上那句', '从榜面那一屏收的：seed 里的描述不许赢过库里那一份');
 });
 
-check('★ favSeedOf 四路派生：三榜切片 → 明星那一批 → 榜史 → 详情缓存行，第一个命中同时决定那几格的值与那一行的出处', async () => {
+check('★ 出处与读数解耦（改判一）：`from` 决定那一格念哪一屏，读数仍按四路 first-hit ⇒ 允许「出处=检索、读数=详情缓存」这种组合', async () => {
+  const h = await mkApi({ states: { daily: null, weekly: null, monthly: null } });
+  await writeRepoCache(h, 'x/one', { name: 'X/One', desc: '详情那句', lang: 'C', stars: 44 });
+  // 用户在**检索屏**点的 ☆，而这一行的读数在本机只有详情缓存那一路有 ⇒ 两格各说各的实话。
+  const { res } = await call(h, post('/api/fav', { repo: 'x/one', action: 'add', from: 'search', seed: { desc: '屏上那句', lang: 'Rust', stars: 9 } }));
+  assert.equal(res.statusCode, 200);
+  const row = await h.__stores.fav.get('x/one');
+  assert.equal(row.from, FAV_FROM_SEARCH, '出处只看那一屏（改判一：宿主不再靠四路去猜）');
+  assert.equal(row.stars, 44, '读数吃四路 first-hit：详情缓存那一路赢了 seed');
+  assert.equal(row.desc, '详情那句');
+  assert.equal(row.lang, 'C');
+});
+
+check('★ favSeedOf 四路派生：三榜切片 → 明星那一批 → 榜史 → 详情缓存行，第一个命中决定那几格的值（出处另看那一屏）', async () => {
   const h = await mkApi({
     states: {
       daily: stateRow('daily', [crow('d/one', 1, { name: 'D/One', stars: 11, desc: '日榜那句', lang: 'Go' })]),
@@ -2143,45 +2189,46 @@ check('★ favSeedOf 四路派生：三榜切片 → 明星那一批 → 榜史 
   await h.__stores.seen.touch({ repo: 'v/one', name: 'V/One', board: 'daily', at: 4000, rank: 5 });
   await writeRepoCache(h, 'c/one', { name: 'C/One', desc: '详情那句', lang: 'C', stars: 44 });
 
-  for (const [repo, wantFrom, wantStars] of [
-    ['d/one', BOARD_LABELS.daily, 11],
-    ['w/one', BOARD_LABELS.weekly, 22],
-    ['s/one', FAV_FROM_STARS, 33],
-    ['v/one', FAV_FROM_STARS, null],
-    ['c/one', FAV_FROM_DETAIL, 44],
+  // ★ 每一发都钉上**它真在哪一屏点的**（屏 id 与命中那一路刻意不同）⇒ 出处与读数各自独立，谁也没替谁猜。
+  for (const [repo, screenId, wantStars] of [
+    ['d/one', 'daily', 11],
+    ['w/one', 'weekly', 22],
+    ['s/one', 'stars', 33],
+    ['v/one', 'stars', null],
+    ['c/one', 'detail', 44],
   ]) {
-    const { res } = await call(h, post('/api/fav', { repo, action: 'add' }));
+    const { res } = await call(h, post('/api/fav', { repo, action: 'add', from: screenId }));
     assert.equal(res.statusCode, 200, `${repo} 该收得进`);
     const row = await h.__stores.fav.get(repo.toLowerCase());
-    assert.equal(row.from, wantFrom, `${repo} 的出处念错了`);
+    assert.equal(row.from, FAV_FROM_BY_SCREEN[screenId], `${repo} 的出处念错了（它只看那一屏）`);
     if (wantStars === null) {
       assert.equal('stars' in row, false, '榜史那一路只有显示名：那一格在屏上是 —，不许从别处补一个数（那是用户没看见过的数）');
     } else {
       assert.equal(row.stars, wantStars, `${repo} 应当取**第一个命中**那一路的读数`);
     }
   }
-  // ★ 优先级本身（日 > 周）由 d/one 那一行钉：它同时在日榜第 1 与周榜第 9，出处与星数都取日榜那一份。
+  // ★ 优先级本身（日 > 周）由 d/one 那一行钉：它同时在日榜第 1 与周榜第 9，星数与描述都取日榜那一份。
   assert.equal((await h.__stores.fav.get('d/one')).desc, '日榜那句', '周榜那一句赢了日榜 ⇒ 查找顺序被写反了');
   assert.equal(h.__searchCalls.length, 0, '第三路读的是**库里那一批**，不是当场再问 GitHub 一发');
 });
 
-check('favSeedOf 切片吃 prefs.topN：屏上只有那几行 ⇒ 榜上第 30 行的 ☆ 用户点不到，出处不能念成「在日榜」', async () => {
+check('favSeedOf 切片吃 prefs.topN：屏上只有那几行 ⇒ 榜上第 30 行的 ☆ 用户点不到，切片外的读数一格都不许带进来', async () => {
   const rows = Array.from({ length: 12 }, (_x, i) => crow(`a/${i}`, i + 1, { name: `A/${i}`, stars: 100 + i }));
   const h = await mkApi({ prefs: { topN: 5 }, states: { daily: stateRow('daily', rows), weekly: null, monthly: null } });
-  await call(h, post('/api/fav', { repo: 'a/1', action: 'add' }));
-  await call(h, post('/api/fav', { repo: 'a/9', action: 'add' }));
-  assert.equal((await h.__stores.fav.get('a/1')).from, BOARD_LABELS.daily, '切片内那一行该认出来');
+  await call(h, post('/api/fav', { repo: 'a/1', action: 'add', from: 'detail' }));
+  await call(h, post('/api/fav', { repo: 'a/9', action: 'add', from: 'detail' }));
+  assert.equal((await h.__stores.fav.get('a/1')).stars, 101, '切片内那一行该认出来');
   const off = await h.__stores.fav.get('a/9');
-  assert.equal(off.from, FAV_FROM_DETAIL, '第 10 行不在屏上：拿整表去找会把"没看见"念成出处');
-  assert.equal(off.stars, undefined, '切片外的读数一格都不许带进来');
+  assert.equal(off.stars, undefined, '第 10 行不在屏上：拿整表去找会把"没看见"写成读数');
+  assert.equal(off.from, FAV_FROM_DETAIL, '★ 改判一之后出处不再由"四路都没命中"落进详情 —— 这一发本来就是从详情弹框点的');
 });
 
-check('★ 四路都没有 ⇒ 出处落「详情」，那一行只有 repo / addedAt / from 三格有值：屏上是 — 是实话，不是缺格', async () => {
+check('★ 四路都没有、`seed` 也没给 ⇒ 那一行只有 repo / addedAt / from 三格有值：屏上是 — 是实话，不是缺格', async () => {
   const h = await mkApi();
-  const { res } = await call(h, post('/api/fav', { repo: 'never/seen', action: 'add' }));
+  const { res } = await call(h, post('/api/fav', { repo: 'never/seen', action: 'add', from: 'search' }));
   assert.equal(res.statusCode, 200);
   const row = await h.__stores.fav.get('never/seen');
-  assert.equal(row.from, FAV_FROM_DETAIL);
+  assert.equal(row.from, FAV_FROM_SEARCH, '出处来自那一屏（★ 作废的那一支：以前这一形落「详情」）');
   assert.deepEqual(Object.keys(row).sort(), ['addedAt', 'from', 'repo']);
   const snap = (await call(h, get('/api/snapshot'))).res.json().data;
   const line = snap.fav.rows[0];
@@ -2199,7 +2246,7 @@ check('★ 收藏那一按的三件不做的事各有数：GitHub 零发、不�
     states: { daily: stateRow('daily', [crow('a/b', 1)]), weekly: null, monthly: null },
   });
   const eventsBefore = (await h.__stores.events.list(10)).length;
-  const { res } = await call(h, post('/api/fav', { repo: 'a/b', action: 'add' }));
+  const { res } = await call(h, post('/api/fav', { repo: 'a/b', action: 'add', from: 'daily' }));
   assert.equal(res.statusCode, 200);
   assert.equal(h.__searchCalls.length, 0, '收藏那一按出了网 ⇒ §8.15 ⑨ 那本出网账当场作废');
   assert.equal(llm.jobs.length, 0, '那一屏读的是快照里的原文，不许顺手补译（白烧额度）');
@@ -2217,12 +2264,12 @@ check('★ 写完恒追一帧（幂等那一支也追）+ 回执带整份 fav �
   await flush(5);
   const base = updateFrames(sres.writes.join(''));
 
-  const first = await call(h, post('/api/fav', { repo: 'A/B', action: 'add' }));
+  const first = await call(h, post('/api/fav', { repo: 'A/B', action: 'add', from: 'daily' }));
   assert.equal(first.res.json().data.repo, 'a/b', '主键归一到小写才落库：`A/B` 与 `a/b` 是同一行');
   assert.equal(first.res.json().data.fav.count, 1, '回执带的是**整份** fav 视图（不是 {ok:true} 那一格）');
   assert.equal(updateFrames(sres.writes.join('')) - base, 1, '写完必须追一帧，否则别的连接上的那枚 ☆ 停在灭的');
 
-  const twice = await call(h, post('/api/fav', { repo: 'a/b', action: 'add' }));
+  const twice = await call(h, post('/api/fav', { repo: 'a/b', action: 'add', from: 'daily' }));
   assert.equal(twice.res.json().data.fav.count, 1, '重复点那枚 ☆ 不产生第二行');
   assert.equal(updateFrames(sres.writes.join('')) - base, 2, '幂等那一支也追帧：界面上那一枚与计数本来就该跟着这一按走');
 
@@ -2270,7 +2317,7 @@ check('★ 收藏表读不出（available 不是真 / list 抛错）⇒ 那一�
   assert.equal(s2.fav.available, false, '读门面抛错 ⇒ 那一屏的 available 落 false（界面据此念那句故障话）');
   assert.ok(boom.__warns.some((w) => w.includes('收藏表')), '读失败要留一句可查的日志');
   // ★ 读门面坏了不等于写门面坏了：那一枚 ☆ 按下去照样落库（两件事各走各的门面）
-  assert.equal((await call(boom, post('/api/fav', { repo: 'a/b', action: 'add' }))).res.statusCode, 200);
+  assert.equal((await call(boom, post('/api/fav', { repo: 'a/b', action: 'add', from: 'daily' }))).res.statusCode, 200);
   assert.equal(writes.length, 1);
   assert.equal(writes[0][1].repo, 'a/b');
 });
@@ -2280,7 +2327,7 @@ check('★ 收藏表读不出（available 不是真 / list 抛错）⇒ 那一�
 check('★ 一帧只读译文表**一次**：榜面那份 hits 与收藏那份 hits 吃同一个值（§8.16 ③，读两遍就是两个答案）', async () => {
   const [repo, src, zh] = DESC_ZH_ROWS[0];
   const h = await mkApi({ states: { daily: stateRow('daily', [crow(repo, 1, { desc: src })]), weekly: null, monthly: null } });
-  await call(h, post('/api/fav', { repo, action: 'add' }));
+  await call(h, post('/api/fav', { repo, action: 'add', from: 'daily' }));
   // 计数包装套在**真仓储门面**上（`favStore` 那一路的同一条打法）：读的是产品侧信号，不是替身的自报
   const trans = h.__stores.trans;
   const realEntries = trans.entries.bind(trans);
@@ -2301,8 +2348,8 @@ check('★ 内置与现译两路：同一仓库同一原文 ⇒ 榜面 hits 与�
   const lSrc = 'A line worth translating once';
   const h = await mkApi({ states: { daily: stateRow('daily', [crow(bKey, 1, { desc: bSrc }), crow(lKey, 2, { desc: lSrc })]), weekly: null, monthly: null } });
   await h.__stores.trans.put({ repo: lKey, kind: 'desc', src: transSrcKey(lSrc), zh: '库里那一份中文', at: 66, engine: 'baidu' });
-  await call(h, post('/api/fav', { repo: bKey, action: 'add' }));
-  await call(h, post('/api/fav', { repo: lKey, action: 'add' }));
+  await call(h, post('/api/fav', { repo: bKey, action: 'add', from: 'daily' }));
+  await call(h, post('/api/fav', { repo: lKey, action: 'add', from: 'daily' }));
   const snap = (await call(h, get('/api/snapshot'))).res.json().data;
   const line = (k) => snap.fav.rows.find((r) => r.repo === k);
   assert.equal(snap.descZh.hits[lKey].via, 'live', '前提：这一路走的是库里逐字命中');
@@ -2361,6 +2408,248 @@ check('★ 收藏里那一行不在榜面上也照样上屏：命中吃的是**�
   assert.equal(cell.zh, '库里早译好的那一份');
   assert.equal(cell.via, 'live', '两种来源里这一行走的是库里那一份（内置表压根没有这句）');
   assert.equal(cell.label, engineZhLabel('baidu', 66), '落款读的是库里那一行的档名与时刻，不是这一帧选的那一路');
+});
+
+/* ---------------- 第三十六轮：全站项目检索（§8.18，第十条路由 + ☆ 那枚的 seed） ---------------- */
+
+/** 八张表的名单从 domain 的表定义里取（★ 手抄八个名字，哪天加一张就漏扫那一张）。 */
+const ALL_TABLES = Object.keys(GHT_DOMAIN.tables);
+/** 逐张数行数（零入库那条判据的证据源：写一次就有一张的行数漂）。 */
+const tableCounts = (h) => Object.fromEntries(ALL_TABLES.map((t) => [t, h.__facility.rowCount(GHT_DOMAIN.name, t)]));
+
+check('★ POST /api/search 的两把参数闸：空白词 400 且那一发压根没出发；超 SEARCH_QUERY_MAX 400 并把这道边界念出来', async () => {
+  const h = await mkApi();
+  for (const bad of [{}, { query: '' }, { query: '   ' }, { query: null }]) {
+    const { res } = await call(h, post('/api/search', bad));
+    assert.equal(res.statusCode, 400, `query=${JSON.stringify(bad)} 该当场拒：无输入即发是本轮明确否掉的形状`);
+    assert.equal(res.json().error.code, 'INVALID_PARAM');
+  }
+  // ★ 整包 body 不是一回事：没有 body / 不是对象的 body 归 `BAD_JSON`（同一条 400，但原因要说对，
+  //   界面上那一句才会指到"这一发压根没带词"而不是"词太长"）。
+  for (const bad of [undefined, 'not-an-object']) {
+    const { res } = await call(h, post('/api/search', bad));
+    assert.equal(res.statusCode, 400, `body=${JSON.stringify(bad)} 不是合法的提问`);
+    assert.ok(['BAD_JSON', 'INVALID_PARAM'].includes(res.json().error.code), `拒因报成了 ${res.json().error.code}`);
+  }
+  assert.equal(h.__searchCalls.length, 0, `闸门挡掉之后替身仍被打过 ${h.__searchCalls.length} 次 ⇒ 空白词真的出网了`);
+  // ★ 超长那一句必须把**本插件自己的**边界念出来（不是 GitHub 的口径，domain 那条注释写明这一格是我们定的）。
+  const tooLong = 'x'.repeat(SEARCH_QUERY_MAX + 1);
+  const over = await call(h, post('/api/search', { query: tooLong }));
+  assert.equal(over.res.statusCode, 400);
+  assert.ok(over.res.json().error.message.includes(String(SEARCH_QUERY_MAX)),
+    '越界时不把合法边界念出来 ⇒ 用户只知道"失败了"，不知道要删掉几个字');
+  assert.equal(over.res.json().error.message.includes(String(tooLong.length)), true, '收到的字数没念出来：改一个字数重试时无从对比');
+  assert.equal(h.__searchCalls.length, 0, '超长那一发也不许出发（打过去就是白烧一次配额）');
+  // ★ 恰好等于上限是合法的：边界写成"小于"还是"不大于"，只有这一发能分辨。
+  const exact = await call(h, post('/api/search', { query: 'x'.repeat(SEARCH_QUERY_MAX) }));
+  assert.equal(exact.res.statusCode, 200, '恰好到上限的那一发被挡了（off-by-one）');
+  assert.equal(h.__searchCalls.length, 1);
+  assert.equal(h.__searchCalls[0][0], 'x'.repeat(SEARCH_QUERY_MAX), '递出去的词被改写过 ⇒ 屏上念的词与真问的词不是一份');
+  // 首尾空白照 trim 后放行（与 `searchRepoUrl` 同一口径）
+  const trimmed = await call(h, post('/api/search', { query: '  vite  ' }));
+  assert.equal(trimmed.res.statusCode, 200);
+  assert.equal(trimmed.res.json().data.query, 'vite', '回执里的词是原样串（带空格）⇒ 屏上那一句 quoted 的词与真问的不是一个');
+});
+
+check('★ 检索服务没装配是 501（那颗闭包没接上时不许造一枚调到 undefined 的 runner）；从别机来是 403 且一发都不替别人问', async () => {
+  const bare = await mkApi({ noSearchFetcher: true });
+  const { res } = await call(bare, post('/api/search', { query: 'vite' }));
+  assert.equal(res.statusCode, 501, '未装配该 501：按下去炸在 undefined 上是本轮最难查的一种坏');
+  assert.equal(res.json().error.code, 'GHT_RECORDS_UNAVAILABLE');
+  assert.equal(bare.__searchCalls.length, 0);
+
+  const h = await mkApi();
+  const lan = { remoteAddress: '192.168.1.20' };
+  const blocked = await call(h, post('/api/search', { query: 'vite' }, lan));
+  assert.equal(blocked.res.statusCode, 403, '花配额的入口必须自带闸：放给邻居点等于让别人替我烧匿名 search 池');
+  assert.equal(h.__searchCalls.length, 0, '挡在闸门上，不是挡在出网之后');
+});
+
+check('★ 路由上那把在飞锁有牙：并发第二问回 409，替身只被打过一次（数调用次数，不数返回值）', async () => {
+  let release;
+  const gate = new Promise((r) => { release = r; });
+  const h = await mkApi({ searchFetcher: async () => { await gate; return searchOk(); } });
+  const p1 = call(h, post('/api/search', { query: 'one' }));
+  await flush(5);   // 让第一发真的进到替身里（不 flush 的话两条断言可能都排在闸门前，绿灯是空的）
+  const p2 = call(h, post('/api/search', { query: 'two' }));
+  const second = await p2;
+  assert.equal(second.res.statusCode, 409, `并发第二问拿到 ${second.res.statusCode} ⇒ 闸没挡住的形状混进了成功那一支`);
+  assert.equal(second.res.json().error.code, 'GHT_SEARCH_IN_FLIGHT');
+  assert.equal(h.__searchCalls.length, 1, `替身被打过 ${h.__searchCalls.length} 次 ⇒ "在飞锁"退化成"结果丢弃器"，两次点击照样两发配额`);
+  release();
+  const first = await p1;
+  assert.equal(first.res.statusCode, 200);
+  assert.equal(first.res.json().data.state, 'ok');
+  // ★ 锁真的会放：第三问必须真出发（否则"一小时计数账本"被偷偷塞回来了）
+  const third = await call(h, post('/api/search', { query: 'three' }));
+  assert.equal(third.res.statusCode, 200);
+  assert.equal(h.__searchCalls.length, 2, `三问之后替身共被打 ${h.__searchCalls.length} 次 ⇒ 第一发结算后没解闸`);
+});
+
+check('★ 成功一趟之后八张表逐张没多一行、SSE 一帧不追（零入库是这一屏的定义而不是缺陷）', async () => {
+  const h = await mkApi();
+  // 先取一帧快照把域开出来（八张表的句柄是懒开的：没开时 rowCount 是 -1，那条"逐张 >=0"的自证会红在开域而不是写行）
+  await call(h, get('/api/snapshot'));
+  const sres = makeRes();
+  await h(makeReq({ method: 'GET', url: `${ROUTE_PREFIX}/api/stream` }), sres);
+  await flush(5);
+  const base = updateFrames(sres.writes.join(''));
+  const before = tableCounts(h);
+  for (const t of ALL_TABLES) assert.ok(before[t] >= 0, `表「${t}」没在设施里开出来（名单与装配对不上，下面那条断言是空的）`);
+
+  const { res } = await call(h, post('/api/search', { query: 'vite' }));
+  assert.equal(res.statusCode, 200);
+  assert.equal(res.json().data.state, 'ok', '前提：这一趟是真成功的那一支（空跑一趟证明不了零入库）');
+  assert.ok(res.json().data.rows.length > 0, '前提：回执里确实有行（零行的成功不算走过这一路）');
+  assert.deepEqual(tableCounts(h), before, '★ 检索结果落进了某张表 ⇒ 本轮"一次性载荷、切页签就丢"那裁定破了');
+  assert.equal(updateFrames(sres.writes.join('')) - base, 0, '不追帧：这一批是"这一次提问"的载荷，推给别的面板等于塞一份不属于它们的载荷');
+
+  // 失败与额度那一支同样零入库（坏了也不许把半截结果留在库里）
+  const broken = await mkApi({ searchFetcher: async () => searchBad() });
+  await call(broken, get('/api/snapshot'));   // 同上：先把域开出来再数
+  const b0 = tableCounts(broken);
+  const r2 = await call(broken, post('/api/search', { query: 'vite' }));
+  assert.equal(r2.res.json().data.state, 'limited');
+  assert.deepEqual(tableCounts(broken), b0);
+  // 快照里那一格恒是"没问过"那一形：结果不活在那里
+  const snap = (await call(h, get('/api/snapshot'))).res.json().data;
+  assert.equal(snap.search.state, 'idle', '快照里那一格跟着结果变 ⇒ 载荷就变成"这一批在本机留过东西"');
+  assert.deepEqual(snap.search.rows, [], '★ 快照带了行 ⇒ 零入库在快照这一路被绕开');
+  assert.deepEqual(Object.keys(snap.search).sort(), Object.keys(res.json().data).sort(),
+    '快照那一格与 POST 回执不同形 ⇒ 客户端读到的形状随哪一路来而变');
+});
+
+check('那一发坏了不是 5xx：limited / error / empty 三支都回 200 而 state 各说各的（故障是 GitHub 的答案）', async () => {
+  // ★ `reason` 从**桩自己**那一份取（在这里抄那句「限额用尽（403，重置于 …）」就是第二份真相）。
+  const bad = searchBad();
+  const transport = { ok: false, errKey: 'transport', errText: 'socket hang up', transport: true, at: 7777, rate: {} };
+  const cases = [
+    ['limited', async () => bad, bad.errText],
+    ['error', async () => transport, transport.errText],
+    ['empty', async () => searchOk({ rows: [] }), ''],
+  ];
+  for (const [state, fetcher, reason] of cases) {
+    const h = await mkApi({ searchFetcher: fetcher });
+    const { res } = await call(h, post('/api/search', { query: 'vite' }));
+    assert.equal(res.statusCode, 200, `${state} 那一支不该把 GitHub 的答案报成门面的故障`);
+    const d = res.json().data;
+    assert.equal(d.state, state);
+    assert.equal(d.stateLabel, SEARCH_STATE_LABELS[state]);
+    assert.equal(d.stateNote, searchStateLine({ state, query: 'vite', count: 0, reason }), `${state} 那一句不是 domain 给的那一份`);
+    assert.deepEqual(d.rows, []);
+  }
+  // ★ empty 与 error 分得开（零行是答案、故障是没答案）
+  const e = (await call(await mkApi({ searchFetcher: async () => searchOk({ rows: [] }) }), post('/api/search', { query: 'vite' }))).res.json().data;
+  const f = (await call(await mkApi({ searchFetcher: async () => searchBad() }), post('/api/search', { query: 'vite' }))).res.json().data;
+  assert.equal(e.ok, true);
+  assert.equal(f.ok, false);
+  assert.notEqual(e.stateNote, f.stateNote, '两句一字不差 ⇒ 用户分不出"GitHub 说没有"与"那一发没问成"');
+});
+
+check('★ 检索那一路不派现译、不进补译集合：中文只念本机已有的那一份，命中与缺位两形都验', async () => {
+  const [bKey, bSrc, bZh] = DESC_ZH_ROWS[0];
+  const llm = mkTranslatorStub({ ready: true });
+  const h = await mkApi({
+    prefs: { translateEngine: 'host_llm', llmDesc: true },
+    translator: llm,
+    searchFetcher: async () => searchOk({ rows: [
+      { rank: 1, repo: bKey, name: bKey, desc: bSrc, lang: 'Go', stars: 10 },
+      { rank: 2, repo: 'z/never', name: 'Z/Never', desc: 'A line nobody has translated', lang: 'Zig', stars: 9 },
+    ] }),
+  });
+  const { res } = await call(h, post('/api/search', { query: 'anything' }));
+  const d = res.json().data;
+  assert.equal(d.rows[0].descZh.zh, bZh, '★ 内置表里有这一句却不上屏 ⇒ 那一屏白拿本机已有的中文');
+  assert.equal(d.rows[0].desc, bSrc, '中文覆盖了 desc ⇒ 屏上与载荷同名不同值');
+  assert.equal(d.rows[1].descZh, null, '没命中该给 null（界面念原文），不许给空串冒充"译成了空"');
+  assert.equal(d.rows[1].desc, 'A line nobody has translated', '没命中时念的还是原文');
+  assert.equal(llm.jobs.length, 0, `这一趟派了 ${llm.jobs.length} 发现译 ⇒ 一次点击偷偷烧掉模型额度（第三十三轮那条律的第四个屏）`);
+  await flush(20);
+  assert.equal(llm.jobs.length, 0, '延迟一帧仍不许补派（批次只认屏上的行，而这一批不在任何一张表上）');
+  assert.equal(h.__searchCalls.length, 1, `GitHub 那一发共 ${h.__searchCalls.length} 次 ⇒ 一次点击发了两发`);
+});
+
+/* ---------------- 第三十六轮 ⑥″：☆ 那一枚把屏上那三格一起存下（改判二） ---------------- */
+
+check('★ 四路全空 ⇒ 吃 seed 且出处仍念「检索」：三格逐格进库，而库里没留"这串数是谁递的"那一格', async () => {
+  const h = await mkApi();
+  const { res } = await call(h, post('/api/fav', {
+    repo: 'never/seen', action: 'add', from: 'search',
+    seed: { desc: 'GitHub 在屏上念的那句', lang: 'Rust', stars: 1234 },
+  }));
+  assert.equal(res.statusCode, 200);
+  const row = await h.__stores.fav.get('never/seen');
+  assert.equal(row.from, FAV_FROM_SEARCH, '出处那一格只看那一屏');
+  assert.equal(row.desc, 'GitHub 在屏上念的那句', '★ 改判二：四路全空时屏上那三格要存得下（用户原话「点击收藏的时候，同步存储这些数据」）');
+  assert.equal(row.lang, 'Rust');
+  assert.equal(row.stars, 1234);
+  // ★ `name` 不在白名单上（`FAV_SEED_KEYS` 只有三格）：库里没这一格，屏上那一行由 `favView` 回落主键（那条在 §8.15 那一路钉）
+  assert.equal('name' in row, false, 'seed 里的 name 被收了 ⇒ 显示名有了第二个来源');
+  assert.equal('langColor' in row, false, '★ `langColor` 从检索屏拿不到 ⇒ 那一行色点恒缺位（画默认灰），从 seed 也不许开这个口子');
+  for (const k of Object.keys(row)) {
+    assert.ok(!/seed|source/i.test(k), `库里多出「${k}」那一格 ⇒ 白名单外的键混进了写侧`);
+  }
+});
+
+check('★ 四路任一命中就赢过 seed（同一个仓库在两个屏必须念同一个数）+ seed 只在 add 且 from=search 那一支被读', async () => {
+  const h = await mkApi({ states: { daily: stateRow('daily', [crow('a/b', 1, { name: 'A/B', stars: 500, desc: '榜上那句', lang: 'Go' })]), weekly: null, monthly: null } });
+  // ① 榜切片命中：seed 给三个不同的数，一个都不许赢
+  await call(h, post('/api/fav', { repo: 'a/b', action: 'add', from: 'search', seed: { desc: '屏上那句', lang: 'Rust', stars: 9 } }));
+  const on = await h.__stores.fav.get('a/b');
+  assert.equal(on.stars, 500, 'seed 赢了宿主那一份 ⇒ 同一仓库在收藏与榜面念两个数');
+  assert.equal(on.desc, '榜上那句');
+  assert.equal(on.lang, 'Go');
+  assert.equal(on.from, FAV_FROM_SEARCH, '读数吃库里那一份，出处仍吃那一屏（两条独立事实，不互相推翻）');
+  // ② `from` 不是 search 那一屏时，seed 整格不看（那一屏的行本来就在库里）
+  await call(h, post('/api/fav', { repo: 'c/d', action: 'add', from: 'detail', seed: { desc: '不该被读的那句', lang: 'Rust', stars: 7 } }));
+  const off = await h.__stores.fav.get('c/d');
+  assert.equal('desc' in off, false, '详情那一屏的 seed 被收了 ⇒ 白名单那一支漏开了一道');
+  assert.equal('stars' in off, false);
+  // ③ `remove` 那一支连 seed 也不看（删行没有读数可写）
+  const rm = await call(h, post('/api/fav', { repo: 'a/b', action: 'remove', seed: { desc: '胡说', stars: 1 } }));
+  assert.equal(rm.res.statusCode, 200);
+  assert.equal(await h.__stores.fav.get('a/b'), null, 'remove 之后那一行该真没了（门面缺位给 null，不是 undefined）');
+  assert.deepEqual((await h.__stores.fav.list()).map((r) => r.repo), ['c/d'],
+    'remove 只删它那一行：上面 ② 那一行不受牵连（seed 里的脏读数也没被写回别处）');
+});
+
+check('★ 脏值整格丢而收藏仍成功：desc 给对象/超长、stars 给 -1/1.5/Infinity/"9000"/NaN ⇒ 那一格不落而 ok=true', async () => {
+  const DIRTY_DESC = [{}, [], 123, 'x'.repeat(FAV_SEED_TEXT_MAX + 1), ''];
+  const DIRTY_STARS = [-1, 1.5, Infinity, '9000', NaN, null, undefined];
+  for (const desc of DIRTY_DESC) {
+    const h = await mkApi();
+    const { res } = await call(h, post('/api/fav', {
+      repo: 'd/one', action: 'add', from: 'search', seed: { desc, lang: 'Go', stars: 5 },
+    }));
+    assert.equal(res.statusCode, 200, `desc=${JSON.stringify(desc)} 脏值不该让收藏这一按失败`);
+    const row = await h.__stores.fav.get('d/one');
+    assert.equal('desc' in row, false, `脏 desc 落进了库（${JSON.stringify(desc)}）⇒ 宁可缺位也不收没形状的数`);
+    assert.equal(row.lang, 'Go', '同一份 seed 里别的干净格不受牵连（整格丢不是整包丢）');
+    assert.equal(row.stars, 5);
+  }
+  for (const stars of DIRTY_STARS) {
+    const h = await mkApi();
+    const { res } = await call(h, post('/api/fav', {
+      repo: 's/one', action: 'add', from: 'search', seed: { desc: '干净那句', lang: 'Go', stars },
+    }));
+    assert.equal(res.statusCode, 200);
+    const row = await h.__stores.fav.get('s/one');
+    assert.equal('stars' in row, false, `stars=${String(stars)} 被收进库 ⇒ "9000" 圆成 9000、缺位冒充成 0 都在这一支`);
+    assert.equal(row.desc, '干净那句');
+    assert.equal(res.json().data.fav.rows.length, 1, '脏值那一支收藏仍成功：行必须在库里');
+  }
+  // ★ 过一遍 JSON 再判（第三十三轮那条病历：内存里键在而 JSON 之后没了，界面上就是两种形状）
+  const h2 = await mkApi();
+  const { res } = await call(h2, post('/api/fav', { repo: 'j/one', action: 'add', from: 'search', seed: { stars: '9000', langColor: '#ff0000', name: '假名' } }));
+  const round = JSON.parse(JSON.stringify(res.json().data.fav.rows[0]));
+  assert.equal(round.stars, null, '视图给 null（屏上 —），而库里没这一格：两种形状在 JSON 之后必须一致');
+  assert.equal('langColor' in JSON.parse(JSON.stringify(await h2.__stores.fav.get('j/one'))), false,
+    '★ seed 里的 langColor 被收了 ⇒ 检索屏根本没有那一格，收了就是自造一份语言色表');
+  // seed 整包是脏的（非对象）⇒ 与"没给"同形，收藏照样成功
+  const h3 = await mkApi();
+  const r3 = await call(h3, post('/api/fav', { repo: 'p/one', action: 'add', from: 'search', seed: '一整串' }));
+  assert.equal(r3.res.statusCode, 200);
+  assert.deepEqual(Object.keys(await h3.__stores.fav.get('p/one')).sort(), ['addedAt', 'from', 'repo']);
 });
 
 await runAll('api');

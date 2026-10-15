@@ -11,7 +11,7 @@ import {
 } from '../lib/stores.js';
 import { BOARDS, BOARD_LABELS, DEFAULT_PREFS, GHT_DOMAIN, REPO_CACHE_MAX, REPO_ERROR_LABELS, TRANS_MAX, LLM_KINDS, PREF_CRED_FIELDS, SEARCH_ROW_SHAPE,
   // ★ 第三十二轮：收藏那一格的出处是**封闭五档**（前三档由 `BOARD_LABELS` 派生）—— 用例里也不手抄那五个词。
-  FAV_FROM_STARS, FAV_FROM_DETAIL, FAV_FROM_SOURCES, FAV_ACTIONS,
+  FAV_FROM_STARS, FAV_FROM_DETAIL, FAV_FROM_SEARCH, FAV_FROM_SOURCES, FAV_ACTIONS,
 } from '../lib/domain.js';
 
 /* ---------------- 造合法行的最小素材 ---------------- */
@@ -854,7 +854,7 @@ check('★ fav：不裁行、不设上限、不参与 LRU（收藏久了不许�
   assert.equal(REPO_CACHE_MAX > 30, true, '前提：详情缓存那张表确实有上限，这条对照才不是空说');
 });
 
-check('★ fav：schema 挡脏行 —— from 只认封闭五档（缺它整行 INVALID），越界与手打的串都进不来', async () => {
+check('★ fav：schema 挡脏行 —— from 只认封闭六档（缺它整行 INVALID），越界与手打的串都进不来', async () => {
   const s = mk();
   await assert.rejects(() => s.fav.add({ repo: 'a/b', addedAt: 1000 }),
     (e) => e.code === RECORDS_ERROR.INVALID, '缺出处必须存不进去，而不是界面上念一句「—」');
@@ -865,8 +865,8 @@ check('★ fav：schema 挡脏行 —— from 只认封闭五档（缺它整行 
   await s.fav.add(favSeed({ from: FAV_FROM_DETAIL }));
   assert.equal((await s.fav.get('tester-army/e2e')).from, FAV_FROM_DETAIL);
   assert.deepEqual(FAV_FROM_SOURCES.slice(0, 3), BOARDS.map((b) => BOARD_LABELS[b]),
-    '★ 前提：前三档由 BOARDS + BOARD_LABELS 派生（手抄就会在加榜那天漂），后两档是明星与详情');
-  assert.deepEqual(FAV_FROM_SOURCES.slice(3), [FAV_FROM_STARS, FAV_FROM_DETAIL]);
+    '★ 前提：前三档由 BOARDS + BOARD_LABELS 派生（手抄就会在加榜那天漂），后三档是明星、详情与检索');
+  assert.deepEqual(FAV_FROM_SOURCES.slice(3), [FAV_FROM_STARS, FAV_FROM_DETAIL, FAV_FROM_SEARCH]);
 });
 
 check('fav：快照那五格缺位照样存得进（本机一个读数都没见过它时，那一行只有 repo / addedAt / from）', async () => {

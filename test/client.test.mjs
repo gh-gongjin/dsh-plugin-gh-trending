@@ -44,6 +44,8 @@ import {
   FAV_FROM_STARS, FAV_FROM_DETAIL, FAV_FROM_SOURCES, FAV_SORTS, FAV_DEFAULT_SORT,
   FAV_COL_STARS, FAV_STAMP_LABELS, FAV_NOTE, FAV_EMPTY_NOTE,
   FAV_NO_STORE_NOTE, favFromCell,
+  // ★ 第三十六轮：检索那一屏的六态名单与那六枚短词（句子本身绝不在这里抄 —— 抄一句就是第二份出处）。
+  SEARCH_STATES, SEARCH_STATE_LABELS, SEARCH_RATE_ANON,
 } from '../lib/domain.js';
 import { netView, translatorView, githubView, publicPrefs } from '../lib/api.js';
 import { DESC_ZH_ROWS, DESC_ZH_LABEL, DESC_ZH_NOTE } from '../lib/desc-zh.js';
@@ -59,6 +61,10 @@ import { starsView } from '../lib/stars.js';
 // ★ 第三十二轮：`fav` 那一格同样由宿主的 favView 现造（同 starsView 那条律）—— 手搓一份 `{rows, sorts...}`
 //   就等于客户端在测自己编的键，宿主改一次键名这里 60 条照样绿、真机那一屏却是空的。
 import { favView } from '../lib/favs.js';
+// ★ 第三十六轮：`search` 那一格同样由**产品侧那一份纯视图**现造（同 favView 那条律）——
+//   这一格在快照里**只是文案**（`state:'idle'`、行恒为空），客户端那一屏的行来自 POST 的回执；
+//   夹具手搓一份就等于把"检索屏读的是宿主那份视图"这条律圆掉。
+import { searchView } from '../lib/services/search-run.js';
 
 /** 载荷 = index.js 里 webserver/index-inject 推的那一份，逐键对齐。 */
 const PAYLOAD = {
@@ -316,6 +322,9 @@ function snapFixture(over = {}, starsOver = {}) {
     stars,
     // ★ 第三十二轮：收藏那一屏的原料（宿主 favView 现造，同一条律）。
     fav,
+    // ★ 第三十六轮：检索那一屏的**文案格**（宿主同一个 `searchView({})`：零行、只带那六句与列名）。
+    //   这一屏的结果不在快照里 ⇒ 夹具喂进任何行都是替宿主编一种它从来不送的颜色。
+    search: searchView({}),
     cross: { rising: [], cooling: [], note: '跨榜同现由这一次检查的三张榜交叉算出，不额外发请求。' },
     events: [],
     ...over,
@@ -778,7 +787,7 @@ check('client-16 新增列名跟着榜走：今日 / 本周 / 本月来自载荷
     '新增', '不许拿日榜文案套月榜');
 });
 
-check('client-17 页签条：八签齐且有序，当前签高亮，计数徽标只在有数时出现', () => {
+check('client-17 页签条：九签齐且有序，当前签高亮，计数徽标只在有数时出现', () => {
   const { TabBar } = loadClient().exports.__test.components;
   const clicked = [];
   const snap = snapFixture({ events: [{ id: 'e1', at: AT, kind: 'board_enter', repo: 'a/one' }] });
@@ -786,18 +795,22 @@ check('client-17 页签条：八签齐且有序，当前签高亮，计数徽标
   const nav = findByClass(tree, 'gt-tabs')[0];
   assert.ok(nav, '页签条没渲染出来，判据空转');
   const btns = kidsOf(nav, 'button');
-  assert.deepEqual(btns.map((b) => b.children[0]), ['总览', '日榜', '周榜', '月榜', '明星仓库', '收藏', '变化记录', '设置'],
-    '三榜签标题来自载荷 boardLabels，其余五个是界面结构名（★ 第二十三轮插入第七签「明星仓库」，第三十二轮插入第八签「收藏」，'
-    + '两句位置都钉死：收藏排在明星仓库之后、变化记录之前）');
-  assert.deepEqual(btns.map((b) => hasCls(b, 'on')), [false, false, true, false, false, false, false, false]);
+  assert.deepEqual(btns.map((b) => b.children[0]), ['总览', '日榜', '周榜', '月榜', '明星仓库', '收藏', '检索', '变化记录', '设置'],
+    '三榜签标题来自载荷 boardLabels，其余六个是界面结构名（★ 第二十三轮插入第七签「明星仓库」，第三十二轮插入第八签「收藏」，'
+    + '第三十六轮插入第九签「检索」，三句位置都钉死：检索排在收藏之后、变化记录之前）');
+  assert.deepEqual(btns.map((b) => hasCls(b, 'on')), [false, false, true, false, false, false, false, false, false]);
   for (const b of btns) b.props.onClick();
-  assert.deepEqual(clicked, ['overview', 'daily', 'weekly', 'monthly', 'stars', 'fav', 'events', 'settings'], '回调必须带页签键');
+  assert.deepEqual(clicked, ['overview', 'daily', 'weekly', 'monthly', 'stars', 'fav', 'search', 'events', 'settings'], '回调必须带页签键');
   assert.deepEqual(findByClass(tree, 'gt-tab-n').map(text),
     ['20', '20', String(snap.stars.rows.length), String(snap.fav.rows.length), '1'],
     '徽标 = 该榜榜面条数 / 明星那一屏的行数 / 收藏那一屏的行数 / 流水条数；0 与缺位都不给徽标（0 冒充有数最坏）');
+  // ★ 第九签**恒不摆徽标**：那一屏是一次性载荷（`snap.search` 只是文案格、行恒为空），
+  //   给它挂一个 0 或上一批的数都是假话 —— 这条钉的是"检索那一格压根不进 counts"。
+  assert.equal(findByClass(tree, 'gt-tab-n').map(text).includes(String(snap.search.rows.length)), false,
+    '检索那一签的计数上了屏 ⇒ 零入库那一裁定在界面上就变成"它是有数的"');
 
   const first = render(TabBar, { tab: 'overview', onTab() {}, snap: undefined });
-  assert.equal(kidsOf(findByClass(first, 'gt-tabs')[0], 'button').length, 8, '首帧前八签照样齐');
+  assert.equal(kidsOf(findByClass(first, 'gt-tabs')[0], 'button').length, 9, '首帧前九签照样齐');
   assert.deepEqual(findByClass(first, 'gt-tab-n').map(text), [], '没有快照就不许编计数');
   assert.ok(kidsOf(findByClass(first, 'gt-tabs')[0], 'button')[0].props.className.includes('on'));
 
@@ -1084,14 +1097,14 @@ check('client-29 样式注入：同 id 已存在就跳过（reload 不叠两份�
   assert.deepEqual(b.styleOps, [], 'document 里已有同 id style ⇒ 一份都不许再塞');
 });
 
-check('client-30 页签路由：八签各自成页、页签条常驻，首帧前每页都有话说', () => {
+check('client-30 页签路由：九签各自成页、页签条常驻，首帧前每页都有话说', () => {
   const page = (opts) => render(loadClient(PAYLOAD, opts).exports.__test.components.GhTrendingPage, {});
   const titles = (tree) => findByClass(tree, 'gt-card-t').map(text);
 
   const before = page({});
   assert.equal(findByClass(before, 'gt-root').length, 1);
   assert.equal(findByClass(before, 'gt-tabs').length, 1, '页签条常驻：换页不能把它一起换掉');
-  assert.equal(kidsOf(findByClass(before, 'gt-tabs')[0], 'button').length, 8);
+  assert.equal(kidsOf(findByClass(before, 'gt-tabs')[0], 'button').length, 9);
   assert.deepEqual(titles(before), ['三榜状态', '日榜', '周榜', '月榜', '跨榜同现'], '默认落在总览页');
   const t = text(before);
   assert.match(t, /等待首帧/);
@@ -1107,6 +1120,13 @@ check('client-30 页签路由：八签各自成页、页签条常驻，首帧前
   assert.match(text(favBefore), /等待首帧/);
   assert.equal(findAllType(favBefore, 'table').length, 0, '首帧前不摆空表');
   assert.equal(findByClass(favBefore, 'gt-fav').length, 0, '首帧前连那一枚 ☆ 都不摆（按下去会打给谁？）');
+  // ★ 第三十六轮：检索那一页同一条律，而且它比收藏那一屏更严 —— 那一屏的原料在库里，这一屏的原料在**回执里**，
+  //   没首帧连"这一屏有哪六列、那六句怎么写"都不知道 ⇒ 连输入框那一条都不摆（摆了就是一句客户端自己编的文案）。
+  const searchBefore = page({ tab: 'search' });
+  assert.deepEqual(titles(searchBefore), ['检索']);
+  assert.match(text(searchBefore), /等待首帧/);
+  assert.equal(findAllType(searchBefore, 'table').length, 0, '首帧前不摆空表');
+  assert.equal(findByClass(searchBefore, 'gt-q').length, 0, '首帧前连输入框都不摆（按下去打的是哪一路？）');
   assert.deepEqual(titles(page({ tab: 'settings' })), ['运行环境']);
   assert.match(text(page({ tab: 'settings' })), /配置未就位/);
 
@@ -1118,6 +1138,7 @@ check('client-30 页签路由：八签各自成页、页签条常驻，首帧前
     monthly: ['月榜'],
     stars: ['明星仓库'],
     fav: ['收藏'],
+    search: ['检索'],
     events: ['变化记录'],
     settings: ['设置', '运行环境'],
   };
@@ -3098,7 +3119,7 @@ check('client-76 收藏那一屏的分段器落盘：切走再回来还在同一
     '写 favSort 时把另外三个挤掉 = 切回来又回到出厂（落盘是一张合并表，不是每次重写）');
 });
 
-check('client-77 那一枚发出去的一发：只有 POST /api/fav 与 {repo, action} 两格，回执整份 fav 换进快照，失败不摆横幅也不动状态', async () => {
+check('client-77 那一枚发出去的一发：POST /api/fav 的 add 只有 {repo, action, from} 三格，回执整份 fav 换进快照，失败不摆横幅也不动状态', async () => {
   const snap = snapFixture();
   const snapOn = snapFixture({}, { favRows: [favRow('a/two')] });
   const reply = snapFixture({}, { favRows: [favRow('zzz/new', { addedAt: atOff(-1000) })] }).fav;
@@ -3115,7 +3136,7 @@ check('client-77 那一枚发出去的一发：只有 POST /api/fav 与 {repo, a
   const settled = () => new Promise((r) => setTimeout(r, 0));
   const updaters = (lc) => lc.stateSets.filter((x) => x.init === null && typeof x.next === 'function');
 
-  // ① 成功那一发：出网形状只有这一发，body 只有两格
+  // ① 成功那一发：出网形状只有这一发，body 只有三格
   const a = mk(snap, { ok: true, status: 200, json: async () => ({ ok: true, data: { fav: reply } }) });
   assert.equal(text(star(a.tree, 1)), '☆', '前提：榜面第二枚此刻是灭的');
   star(a.tree, 1).props.onClick({ stopPropagation() {} });
@@ -3123,9 +3144,11 @@ check('client-77 那一枚发出去的一发：只有 POST /api/fav 与 {repo, a
   assert.equal(a.calls.length, 1, '点一枚就一发：不追补第二问');
   assert.equal(a.calls[0].url, '/gh-trending/api/fav', '路由就是那一发（拼错在真机是 404，这里先红）');
   assert.equal(a.calls[0].opts.method, 'POST');
-  assert.deepEqual(JSON.parse(a.calls[0].opts.body), { repo: 'a/two', action: 'add' });
-  assert.deepEqual(Object.keys(JSON.parse(a.calls[0].opts.body)), ['repo', 'action'],
-    '浏览器看到的星数、描述、语言、出处一个字都不递（那五格由宿主在写那一刻自己取）');
+  // ★ 第三十六轮改判一：出处那一格由**浏览器**给（用户真在哪一屏点的只有它知道），递的是**屏 id** 不是库里那个词。
+  assert.deepEqual(JSON.parse(a.calls[0].opts.body), { repo: 'a/two', action: 'add', from: 'daily' });
+  assert.deepEqual(Object.keys(JSON.parse(a.calls[0].opts.body)), ['repo', 'action', 'from'],
+    '浏览器看到的星数、描述、语言、时刻一个字都不递（那五格由宿主在写那一刻自己取）；'
+    + '`from` 递的是屏 id `daily` 而不是词「日榜」⇒ 词只有一份，长在宿主那张表上');
   // ② 回执整份换进快照（不是只补那一行，也不是重造一份快照）
   assert.equal(updaters(a.lc).length, 1, '回执只动快照那一格');
   const after = updaters(a.lc)[0].next({ at: 1, prefs: { topN: 15 } });
@@ -3138,6 +3161,10 @@ check('client-77 那一枚发出去的一发：只有 POST /api/fav 与 {repo, a
   star(b.tree, 1).props.onClick({ stopPropagation() {} });
   await settled();
   assert.deepEqual(JSON.parse(b.calls[0].opts.body), { repo: 'a/two', action: 'remove' });
+  // ★ 第三十六轮改判一：`remove` 那一支**连 from 都不看**（删行没有出处可写）⇒ 客户端也不递，
+  //   多递一格就是把"这一屏是收藏"当成出处落进库里。
+  assert.deepEqual(Object.keys(JSON.parse(b.calls[0].opts.body)), ['repo', 'action'],
+    '移出的那一发只有两格：多出来的任何一格都会在宿主那边变成"它以为自己有含义"');
   // ④ 失败：不摆横幅、不动状态 —— 亮与灭恒来自快照 ⇒ 这一发没成屏上就不变，那本身就是回执
   const c = mk(snap, { ok: false, status: 503, json: async () => ({ ok: false, error: { code: 'GHT_RECORDS_UNAVAILABLE', message: '本地存储不可用' } }) });
   star(c.tree, 1).props.onClick({ stopPropagation() {} });
@@ -3149,7 +3176,7 @@ check('client-77 那一枚发出去的一发：只有 POST /api/fav 与 {repo, a
   assert.deepEqual(findByClass(afterFail, 'gt-fav').map(text), ['☆', '☆', '☆'], '失败后屏上还是原样');
 });
 
-check('client-78 ★ 收藏那一格摆的是本机已有的那一份中文，悬停三行齐；没命中摆原文 —— 三屏共用同一个 descCell（§8.16 ②④）', () => {
+check('client-78 ★ 收藏那一格摆的是本机已有的那一份中文，悬停三行齐；没命中摆原文 —— 四处渲染点共用同一个 descCell（§8.16 ②④）', () => {
   const { FavCard, StarsCard, BoardCard } = loadClient().exports.__test.components;
   const liveSrc = 'A line only the fav screen holds';
   const liveAt = atOff(-60000);
@@ -3200,7 +3227,7 @@ check('client-78 ★ 收藏那一格摆的是本机已有的那一份中文，�
   const src = clientSrc();
   assert.deepEqual((src.match(/className:\s*'gt-desc'/g) ?? []).length, 1,
     '第二处 `className: "gt-desc"` 就是那条规则被逐字抄了第二遍（本轮之前正是两遍）');
-  assert.deepEqual((src.match(/descCell\(/g) ?? []).length, 4, '一处定义 + 三处渲染点（榜面 / 明星 / 收藏）');
+  assert.deepEqual((src.match(/descCell\(/g) ?? []).length, 5, '一处定义 + 四处渲染点（榜面 / 明星 / 收藏 / 检索）');
   // ⑦ 同一仓库、同一原文 ⇒ 明星那一屏与收藏那一屏念的是同一句中文（一根线，不是两套判据）
   assert.equal(text(starsCells(render(StarsCard, { snap, onRepo() {}, onSave() {} }), 0)[2]), DESC_ZH_ROWS[0][2],
     '前提：明星那一屏的第一行就是这一仓库');
@@ -3210,6 +3237,330 @@ check('client-78 ★ 收藏那一格摆的是本机已有的那一份中文，�
   const boardSpan = kidsOf(kidsOf(findAllType(render(BoardCard, { snap, board: 'daily', onRepo() {}, onFav() {} }), 'table')[0], 'tbody')[0], 'tr')[0].children[2].children[0];
   assert.equal(text(boardSpan), DESC_ZH_ROWS[0][2], '榜面那一列的中文是本轮改动的零回归基线');
   assert.ok(boardSpan.props.title.includes(`原文：${DESC_ZH_ROWS[0][1]}`), '榜面那两屏的悬停三行也不许漂');
+});
+
+/* ---------------- 第三十六轮：全站项目检索那一屏 ---------------- */
+
+/** 那一发回包折形的一行（六格按 `SEARCH_ROW_SHAPE` 的那套名字，用例不自立一套）。 */
+const srow = (rank, repo, over = {}) => ({
+  rank, repo, name: over.name || repo, desc: 'An english description', lang: 'Go', stars: 1234, ...over,
+});
+const sres = (rows, over = {}) => ({
+  ok: true, at: atOff(-1500),
+  rate: { left: 9, limit: SEARCH_RATE_ANON, resetAt: atOff(3600000), authed: false },
+  rows, ...over,
+});
+const sresBad = (over = {}) => ({
+  ok: false, at: atOff(-1500), rate: { left: 0, limit: SEARCH_RATE_ANON, resetAt: atOff(1800000), authed: false },
+  errKey: 'fail_5xx', errText: 'GitHub 回了 500：boom', transport: false, ...over,
+});
+/**
+ * 六态各一份载荷，全部由**宿主那一份 `searchView`** 现造（同 favView / starsView 那条律：夹具手搓形状 = 客户端在测自己编的键）。
+ * ★ 那四行刻意各钉一路：内置中文 / 库里现译 / 都没命中（念原文）/ 三格全缺位；第二行同时是已收藏的那一行（屏上恒 ★）。
+ */
+function searchViews() {
+  const rows = [
+    srow(1, DESC_ZH_ROWS[0][0], { desc: DESC_ZH_ROWS[0][1], lang: 'Rust' }),
+    srow(2, 'a/live', { stars: 0 }),
+    srow(3, 'a/plain', { desc: 'Never on this machine', stars: 77 }),
+    srow(4, 'a/gap', { desc: '', lang: '', stars: undefined }),
+  ];
+  const descHits = descZhHits(rows, [
+    { repo: 'a/live', kind: 'desc', src: transSrcKey('An english description'), zh: '这一句是现译的中文', at: atOff(-90000), chars: 9, engine: 'baidu' },
+  ]).hits;
+  const favRows = [favRow('a/live')];
+  const q = 'rust';
+  return {
+    idle: searchView({}),
+    asking: searchView({ asking: true, query: q }),
+    ok: searchView({ result: sres(rows), query: q, descHits, favRows }),
+    empty: searchView({ result: sres([]), query: q, descHits, favRows }),
+    limited: searchView({ result: sresBad({ errKey: 'rate_limited', errText: '限额用尽（403，重置于 10-14 09:00）' }), query: q }),
+    error: searchView({ result: sresBad(), query: q }),
+  };
+}
+
+check('client-79 ★ 检索那一屏六列逐列同数：列名、那六句、缺位符与卡脚整句全部逐字吃载荷，客户端一个字不补（§8.18 ①③）', () => {
+  const T = loadClient().exports.__test;
+  const { SearchCard } = T.components;
+  const V = searchViews();
+  const open = (cell, states) => {
+    const snap = { ...snapFixture(), search: cell };
+    const tree = render(loadClient(PAYLOAD, { states }).exports.__test.components.SearchCard,
+      { snap, onRepo() {}, onAsk() {}, onFav() {} });
+    return { snap, tree };
+  };
+  // ① 六列形状（★ 只有 `ok` 那一态摆表）
+  const { tree } = open(V.ok);
+  const tbl = findAllType(tree, 'table')[0];
+  assert.ok(tbl, 'ok 那一态没摆出表，判据空转');
+  assert.equal(kidsOf(kidsOf(tbl, 'colgroup')[0], 'col').length, 6, '六列的列模板');
+  const ths = cellsOf(tbl, 'thead');
+  assert.deepEqual(ths.map(text), ['#', '仓库', '描述', '语言', V.ok.cols.stars, V.ok.cols.fav],
+    '后两列列名逐字吃载荷那一份（前四列是界面结构名，与明星屏同名同序）');
+  assert.deepEqual(ths.map((t) => hasCls(t, 'gt-tail')), [false, false, false, false, false, true], '尾列表头带 gt-tail（那 36px 归 CSS 打在这一列）');
+  const trs = kidsOf(kidsOf(tbl, 'tbody')[0], 'tr');
+  assert.deepEqual(trs.map((tr) => kidsOf(tr, 'td').length), [6, 6, 6, 6], '每行六个 td：少一列整表错位');
+  const cells = (i) => kidsOf(trs[i], 'td');
+  assert.deepEqual(trs.map((tr) => text(findAllType(tr, 'a')[0])),
+    [DESC_ZH_ROWS[0][0], 'a/live', 'a/plain', 'a/gap'], '行序吃载荷那一份原样顺序（相关度排，界面不自己按星数重排）');
+  // ② 描述那一格：中文只多开一格，四路各念各的
+  assert.equal(text(cells(0)[2].children[0]), DESC_ZH_ROWS[0][2], '内置那一路：本机早就躺着的那一句中文上屏');
+  assert.equal(text(cells(1)[2].children[0]), '这一句是现译的中文', '库里逐字命中的现译那一路（判据仍只在 descZhHits 一处）');
+  assert.equal(text(cells(2)[2].children[0]), 'Never on this machine', '★ 没命中就念 GitHub 原文（§8.18 ⑤：这一屏不派现译，缺位符不给原文那一格）');
+  assert.equal(text(cells(3)[2].children[0]), V.ok.missingCell, '原文与中文两样都没有 ⇒ 吃载荷的缺位符');
+  // ③ 语言那一格：只有名字，**没有色点**(search 回包压根不给 langColor)
+  assert.equal(findAllType(cells(0)[3], 'i').length, 1, '有语言名就摆那个点');
+  assert.equal(findAllType(cells(0)[3], 'i')[0].props.style, undefined,
+    '★ 那个点不许带内联色值：客户端一接 langColor 就等于在浏览器里另立第二份语言色表');
+  assert.equal(text(cells(3)[3]), V.ok.missingCell, '语言缺位同上，且不摆那个点');
+  assert.equal(findAllType(cells(3)[3], 'i').length, 0);
+  // ④ 累计 ★：0 与「没有这一格」分得开（客户端不判档、不造 0）
+  assert.equal(text(cells(0)[4]), T.fmtCount(1234), '有值那一格走 fmtCount');
+  assert.equal(text(cells(1)[4]), '0', '真是 0 星就念 0（缺位演成 0 是同一族假话，反过来也一样）');
+  assert.equal(text(cells(3)[4]), V.ok.missingCell, '载荷那一格是 null ⇒ 念缺位');
+  // ⑤ 那一枚 ☆/★ 恒来自载荷的 `favSaved`（界面自己不改状态）
+  assert.deepEqual(findByClass(tree, 'gt-fav').map(text), ['☆', '★', '☆', '☆'],
+    '第二行在库里已有那一行 ⇒ 屏上恒 ★（这一屏自己点了也不会变亮，亮灭只跟载荷）');
+  // ⑥ 卡脚只剩额度那一行（★ 第三十六轮 ⑫ 追加改判：那句长 note 整条撤了，载荷里也没有 `note` 这一格）
+  const notes = findByClass(tree, 'gt-note');
+  assert.equal(notes.length, 1, '卡脚多出一行 ⇒ 用户 10-14 划掉的那一段又摆回屏上了');
+  assert.equal(text(notes[0]), V.ok.statLine, '额度那三个数吃回包响应头拼好的整句');
+  // ⑦ ★ 六态各一句、六句互异，且屏上只念载荷那一句
+  const keys = [...SEARCH_STATES];
+  assert.deepEqual(keys.sort(), Object.keys(V).sort(), '夹具与 domain 的六态名单得对上，否则这一条是空跑');
+  const said = {};
+  for (const k of keys) {
+    const t = open(V[k]).tree;
+    said[k] = text(findByClass(t, 'gt-sub')[0]);
+    assert.equal(said[k], V[k].stateNote, `${k}：屏上那一句不是载荷那一句（客户端补了字或读错了格）`);
+    assert.equal(text(findByClass(t, 'gt-card-n')[0]), V[k].stateLabel, `${k}：卡头那枚短词吃载荷 stateLabel`);
+    assert.equal(findAllType(t, 'table').length, k === 'ok' ? 1 : 0,
+      `${k}：只有 ok 摆表 —— empty 是答案、error 是没答案，两者都不摆空表`);
+  }
+  const uniq = new Set(Object.values(said));
+  assert.equal(uniq.size, 6, '六句在屏上撞成同一句 ⇒ 用户分不清"没回仓库"和"那一发没成"');
+  assert.equal(new Set(Object.values(V).map((v) => v.stateLabel)).size, 6, '六枚短词同样互异');
+  // ⑦′ ★ 载荷那句给空串时屏上就画空（客户端不许兜底自造一句）：这一档抓的是「抄 domain 那六句之外」的第二种破法 —— 自己圆第七句
+  for (const k of keys) {
+    const t = open({ ...V[k], stateNote: '' }).tree;
+    assert.equal(text(findByClass(t, 'gt-sub')[0]), '',
+      `${k}：载荷那句是空串而屏上冒出别的话 ⇒ 客户端在缺位时自己兜了一句（六句成品的出处只许在 domain）`);
+  }
+  // ⑧ 换载荷值屏上跟着换（写死任何一个字面都当场红）
+  const swappedCell = { ...V.ok, cols: { stars: 'S-星', fav: 'S-收' }, statLine: 'SENTINEL-脚', stateNote: 'SENTINEL-态', stateLabel: 'SENTINEL-头', missingCell: '§' };
+  const sw = open(swappedCell).tree;
+  assert.deepEqual(cellsOf(findAllType(sw, 'table')[0], 'thead').slice(4).map(text), ['S-星', 'S-收']);
+  assert.equal(text(findByClass(sw, 'gt-sub')[0]), 'SENTINEL-态');
+  assert.equal(text(findByClass(sw, 'gt-card-n')[0]), 'SENTINEL-头');
+  assert.equal(text(findByClass(sw, 'gt-note')[0]), 'SENTINEL-脚', '卡脚只剩的那一行也只有一份出处');
+  assert.equal(text(kidsOf(kidsOf(findAllType(sw, 'table')[0], 'tbody')[0], 'tr')[3].children[2].children[0]), '§', '缺位符也只有一份出处');
+  // ⑨ 首帧前（没有载荷那一格）：一个字都不编
+  const bare = render(SearchCard, { snap: {}, onRepo() {}, onAsk() {}, onFav() {} });
+  assert.equal(findAllType(bare, 'table').length, 0, '首帧前不摆表');
+  assert.equal(findByClass(bare, 'gt-q').length, 0, '首帧前连输入框都不摆');
+  assert.equal(findByClass(bare, 'gt-fav').length, 0, '首帧前那枚 ☆ 也不摆：按下去没有回执可等');
+  assert.match(text(bare), /等待首帧/);
+  // ⑩ ★ 那六句与卡脚那句都不在客户端源码里（第二份出处的形状就是这样长出来的）
+  const src = clientSrc();
+  for (const k of keys) {
+    assert.equal(src.includes(V[k].stateNote), false, `${k} 那一句的字面出现在客户端 = 界面自己带了一份文案`);
+  }
+  assert.equal(src.includes('允许清单里那同一个端点'), false, '★ 卡脚那句长说明已由用户 10-14 划掉（⑫）：抄进界面就是给它留第二个住处');
+  assert.equal(src.includes('检索结果'), false, '界面不许替这一屏起第二套说法');
+});
+
+check('client-80 ★ 那一发只有两处触发（回车与「搜一下」），在问期间输入框与按钮一起哑掉，检索词不落 localStorage（§8.18 ④ + ⑧ 第 11 行）', async () => {
+  const V = searchViews();
+  const snap = { ...snapFixture(), search: V.idle };
+  const settled = () => new Promise((r) => setTimeout(r, 0));
+  const open = (states, onAsk) => {
+    const lc = loadClient(PAYLOAD, { states });
+    const tree = render(lc.exports.__test.components.SearchCard, { snap, onRepo() {}, onAsk, onFav() {} });
+    return { lc, tree, input: findByClass(tree, 'gt-q')[0], btn: findByClass(tree, 'gt-go')[0] };
+  };
+  // ① 打字与输入法确认候选词都不发；真回车与那枚按钮是仅有的两处触发
+  const calls = [];
+  let pend;
+  const a = open(['  rust  ', null, false, ''], (q) => { calls.push(q); return new Promise((res) => { pend = () => res(V.ok); }); });
+  a.input.props.onChange({ target: { value: 'x' } });
+  assert.deepEqual(calls, [], '敲进去的字自己变成请求（防抖 / 输入即发）= 一个词烧掉整池匿名额度');
+  let prevented = 0;
+  const enter = (isComposing) => a.input.props.onKeyDown({ key: 'Enter', isComposing, preventDefault: () => { prevented += 1; } });
+  enter(true);
+  assert.deepEqual(calls, [], '输入法确认候选词的那一次回车不许发（那还打在组词中间）');
+  assert.equal(prevented, 0, '那一回连 preventDefault 都没碰：拦下它靠的是同一个判断，不是事后补一句');
+  a.input.props.onKeyDown({ key: 'ArrowDown', preventDefault: () => { prevented += 1; } });
+  assert.deepEqual(calls, [], '别的键不发');
+  enter(false);
+  assert.deepEqual(calls, ['rust'], '★ 回车那一发把框里的词 trim 之后原样交给宿主（两侧空格不是词的一部分）');
+  assert.equal(prevented, 1, '真回车要 preventDefault：别让宿主/浏览器的默认动作跟着走一遍');
+  // ② 那一发在飞时连点不再多发（界面侧那把闸；权威那把在宿主，回那一句 409）
+  a.btn.props.onClick();
+  assert.equal(calls.length, 1, '还在飞时再点 = 第二发，额度烧在它身上');
+  pend();
+  await settled();
+  a.btn.props.onClick();
+  assert.equal(calls.length, 2, '解开之后按钮照样发得出：那把闸不会永久哑掉');
+  // ③ ★ 在问的那一会儿：输入框与按钮一起置灰，那两句话吃快照预带的 `askingNote` / `stateLabels.asking`
+  const b = open(['rust', null, true, ''], () => new Promise(() => {}));
+  assert.equal(b.input.props.disabled, true, '在问时输入框哑掉');
+  assert.equal(b.btn.props.disabled, true, '在问时按钮也哑掉：两句一起置灰，不是只灰按钮');
+  assert.equal(b.input.props.value, 'rust', '哑掉 ≠ 清空：把用户打的字吃掉是另一回事');
+  assert.equal(text(findByClass(b.tree, 'gt-sub')[0]), snap.search.askingNote,
+    '★ POST 还没回，屏上那一句只能吃快照预先带过去的 askingNote（客户端不许自己造文案）');
+  assert.equal(text(findByClass(b.tree, 'gt-card-n')[0]), SEARCH_STATE_LABELS.asking, '卡头那枚词读 stateLabels 里 ask 的那一格');
+  assert.equal(findAllType(b.tree, 'table').length, 0, '在问时不摆表：这一屏本来就没有"上一批"');
+  // ④ 框里只有空格 ⇒ 按钮哑掉且按下去不发（那一发花的是真额度）
+  const calls2 = [];
+  const c = open(['   ', null, false, ''], (q) => { calls2.push(q); return Promise.resolve(V.ok); });
+  assert.equal(c.btn.props.disabled, true);
+  c.btn.props.onClick();
+  c.input.props.onKeyDown({ key: 'Enter', isComposing: false, preventDefault() {} });
+  assert.deepEqual(calls2, [], '空词（只有空格）按两处触发都不发：屏上那个按钮这时按不动');
+  // ⑤ 那一发坏了：横幅只念回执里那句，载荷一格都不塞，置灰确实回落
+  const d = open(['rust', null, false, ''], () => Promise.reject(new Error('那一发还在飞（409）')));
+  d.btn.props.onClick();
+  await settled();
+  assert.deepEqual(d.lc.stateSets.filter((s) => s.idx === 1), [], '坏了不塞载荷 ⇒ 屏上不会留着半批行');
+  assert.deepEqual(d.lc.stateSets.filter((s) => s.idx === 2).map((s) => s.next), [true, false], '那一会儿开了也回了（不永久哑）');
+  assert.equal(d.lc.stateSets.filter((s) => s.idx === 3).slice(-1)[0].next, '那一发还在飞（409）',
+    '失败那一句念的是抛出来的 message：错误句子的出处在宿主，不在界面');
+  const e = open(['', null, false, 'socket hang up'], () => Promise.resolve(V.ok));
+  assert.equal(text(findByClass(e.tree, 'gt-notice-err')[0]).includes('socket hang up'), true, '横幅里带的是回执那句原文');
+  // ⑥ ★ 词不落 localStorage：整页跑一趟，打字零写盘；切签走的那唯一一条写盘通道里也没有那个词
+  const store = {};
+  const p = loadClient(PAYLOAD, { tab: 'search', snap: snapFixture(), storage: store, fetch: async () => ({ ok: true, status: 200, json: async () => ({ ok: true, data: V.ok }) }) });
+  const pTree = render(p.exports.__test.components.GhTrendingPage, {});
+  const pInput = findByClass(pTree, 'gt-q')[0];
+  assert.ok(pInput, '检索签上那个输入框没摆出来，判据空转');
+  pInput.props.onChange({ target: { value: 'vite 关键词' } });
+  assert.deepEqual(p.storageWrites, [], '打字即写盘 ⇒ 第二十九轮那条「只存 id、草稿与弹框不落」被这一屏破掉');
+  kidsOf(findByClass(pTree, 'gt-tabs')[0], 'button')[5].props.onClick();
+  assert.deepEqual(Object.keys(store), [p.exports.__test.UI_KEY], `落盘只许那一格（实际 ${JSON.stringify(Object.keys(store))}）`);
+  assert.equal(store[p.exports.__test.UI_KEY].includes('vite'), false,
+    '★ 检索词混进落盘那格 = 刷新面板又看见上一批的词，零入库在界面侧就变了味');
+  assert.equal(JSON.parse(store[p.exports.__test.UI_KEY]).tab, 'fav', '切签照旧落盘（这一条不受本轮影响）');
+  // ⑦ 这一屏不排期、不轮询、不落盘、不出网：出网只由 onAsk（宿主那条路由）承担
+  const src = clientSrc();
+  const at = src.indexOf('function SearchCard(');
+  assert.ok(at >= 0, 'SearchCard 不在源码里，判据空转');
+  const next = src.indexOf('\n    function ', at + 1);
+  const slice = src.slice(at, next);
+  assert.ok(slice.length > 400 && slice.includes('gt-q'), '切片没切全（右界找错），后面那条正则不算数');
+  assert.equal(/setTimeout|setInterval|clearTimeout|useEffect|localStorage|writeUi|fetch\(/.test(slice), false,
+    '防抖 / 轮询 / 落盘 / 直接出网任何一样溜进这一屏，那个词就在本机留下了东西');
+});
+
+check('client-81 ★ 检索行尾那枚 ☆：屏 id 与那一刻的三格一起递下去，出去的是 {repo, action, from:"search", seed:{desc,lang,stars}}；remove 两格都不递（§8.18 ⑥/⑥″）', async () => {
+  const V = searchViews();
+  const settled = () => new Promise((r) => setTimeout(r, 0));
+  // ① 组件那一头：第三个入参是这一屏的语境（屏 id + 屏上那一刻的三格），组件自己不看它
+  const ctx = [];
+  const { SearchCard } = loadClient().exports.__test.components;
+  const snap = { ...snapFixture(), search: V.ok };
+  const tree = render(SearchCard, { snap, onRepo() {}, onAsk() {}, onFav: (repo, action, c) => ctx.push([repo, action, c]) });
+  const trs = kidsOf(kidsOf(findAllType(tree, 'table')[0], 'tbody')[0], 'tr');
+  const star = (repo) => {
+    const tr = trs.find((t) => text(findAllType(t, 'a')[0]) === repo);
+    assert.ok(tr, `${repo} 那一行没摆出来，判据空转`);
+    return findByClass(kidsOf(tr, 'td')[5], 'gt-fav')[0];
+  };
+  star('a/plain').props.onClick({ stopPropagation() {} });
+  assert.deepEqual(plain(ctx), [['a/plain', 'add', { screenId: 'search', seed: { desc: 'Never on this machine', lang: 'Go', stars: 77 } }]],
+    '★ 用户原话「点击收藏的时候，同步存储这些数据」在界面这一头就是这一发：屏上那一刻的三格随收藏一起递下去');
+  star('a/gap').props.onClick({ stopPropagation() {} });
+  assert.deepEqual(plain(ctx[1][2].seed), { desc: '', lang: '', stars: null },
+    '屏上念的是缺位符，递出去的仍是载荷原值（缺位符进 seed 就是把界面字符当数据存进库；洗掉那一格是宿主 favSeedClean 那单点的事）');
+  star('a/live').props.onClick({ stopPropagation() {} });
+  assert.deepEqual(ctx[2].slice(0, 2), ['a/live', 'remove'], '库里已有这一行 ⇒ 那一枚恒是移出');
+  // ② 页面那一头：真出去的那一发（先找出输入框那一格的序号，再把回执顶进同一序号重挂）
+  const net = [];
+  const p1 = loadClient(PAYLOAD, { tab: 'search', snap: snapFixture(), fetch: async () => ({ ok: true, status: 200, json: async () => ({ ok: true, data: V.ok }) }) });
+  const t1 = render(p1.exports.__test.components.GhTrendingPage, {});
+  findByClass(t1, 'gt-q')[0].props.onChange({ target: { value: 'rust' } });
+  const qIdx = p1.stateSets.filter((s) => s.next === 'rust').map((s) => s.idx)[0];
+  assert.notEqual(qIdx, undefined, '没找到那个词的序号，判据空转');
+  const states = [];
+  states[qIdx] = 'rust';
+  states[qIdx + 1] = V.ok;   // ★ SearchCard 里紧跟那个词的那一格就是回执
+  const p2 = loadClient(PAYLOAD, {
+    tab: 'search', snap: snapFixture(), states,
+    fetch: async (url, opts) => { net.push({ url, body: JSON.parse(opts.body) }); return { ok: true, status: 200, json: async () => ({ ok: true, data: { fav: snapFixture().fav } }) }; },
+  });
+  const t2 = render(p2.exports.__test.components.GhTrendingPage, {});
+  const row2 = kidsOf(kidsOf(findAllType(t2, 'table')[0], 'tbody')[0], 'tr')[2];
+  findByClass(kidsOf(row2, 'td')[5], 'gt-fav')[0].props.onClick({ stopPropagation() {} });
+  await settled();
+  assert.deepEqual(net.map((n) => n.url), ['/gh-trending/api/fav'],
+    '点那一枚只发收藏那一发：检索那一屏不重问一次 GitHub（选择无副作用）');
+  assert.deepEqual(Object.keys(net[0].body), ['repo', 'action', 'from', 'seed'],
+    '四格就是四格：`name` 与 `langColor` 递了宿主也不看，客户端不递 = 不给自己留第二份说法');
+  assert.deepEqual(net[0].body, {
+    repo: 'a/plain', action: 'add', from: 'search',
+    seed: { desc: 'Never on this machine', lang: 'Go', stars: 77 },
+  }, '★ `from` 递的是屏 id `search` 而不是词「检索」：词只有一份，长在宿主那张表上');
+  // ③ 已收藏那一行点出去的还是那两格（remove 没有出处可写，更没有 seed）
+  const row1 = kidsOf(kidsOf(findAllType(t2, 'table')[0], 'tbody')[0], 'tr')[1];
+  findByClass(kidsOf(row1, 'td')[5], 'gt-fav')[0].props.onClick({ stopPropagation() {} });
+  await settled();
+  assert.deepEqual(net[1].body, { repo: 'a/live', action: 'remove' },
+    '移出的那一发多带任何一格都会在宿主那边变成"它以为自己有含义"');
+  assert.equal(net[1].body.seed, undefined);
+});
+
+check('client-82 ★ 检索那一条的形状（⑬ 甲案）：一条盒子一道边框、环画在外层、宽度不设封顶、在问期间靠状态类 —— 界面细节不去赌宿主的 Electron 版本（§8.18 ⑬）', async () => {
+  const css = (clientSrc().match(/const CSS = `([\s\S]*?)`;/) || [])[1] || '';
+  assert.ok(css.includes('.gt-search'), 'CSS 里连那条盒子都没有，后面每条断言都在空转');
+  // 取规则体：选择器逐字给，后面紧跟 `{` 才算这一条（`.gt-search.off .gt-q{` 不会被 `.gt-search.off{` 抓走）
+  const body = (sel) => {
+    const at = css.indexOf(sel + '{');
+    assert.ok(at >= 0, `${sel} 那一条不在 CSS 里，判据空转`);
+    const end = css.indexOf('}', at);
+    assert.ok(end > at, `${sel} 那一条没闭合，切片不可信`);
+    return css.slice(at + sel.length + 1, end);
+  };
+  const search = body('.gt-search'), q = body('.gt-q'), go = body('.gt-go'),
+    ring = body('.gt-search:focus-within'), off = body('.gt-search.off'), ph = body('.gt-q::placeholder');
+  // ① 一道边框画在外层，input 与按钮都不带自己的边框（旧那一形两道边叠在一起就是"框中框"那个观感）
+  assert.ok(/border:1px solid var\(--gt-line2\)/.test(search), '那一道边框没画在外层');
+  assert.ok(/border:none/.test(q) && !/border:1px/.test(q), '★ 输入框自己又画一道 = 两道边框的"框中框"，⑬ 要收掉的就是它');
+  assert.ok(/border:none/.test(go) && !/border:1px/.test(go), '那枚按钮自己又画一道 = 同上');
+  // ② 宽度不设封顶：那一行的余量归这一条（旧那形钉死 420px，1487px 的行右边空 991px）
+  assert.equal(q.includes('max-width'), false, '★ max-width 复辟回 420 那一形 = 右侧那一大片空又回来了');
+  assert.equal(css.includes('420px'), false, 'CSS 里任何一处 420px 都是那一版的残迹');
+  assert.ok(/flex:1 1 auto/.test(q), '输入框不吃剩余宽度 = 条子里留出那道空');
+  // ③ 焦点环：input 自己把默认环关了，就必须有外层那条替代环顶着，且环跟着盒子的圆角走
+  assert.equal(q.includes('outline:none'), true, '没关默认环（那一条方环正是用户指着说丑的那一处）');
+  assert.ok(/box-shadow/.test(ring), '★ 关了默认环却没有替代环 = 键盘焦点在屏上彻底看不见');
+  assert.ok(ring.includes('var(--gt-info)'), '那一圈光晕的基色走 --gt-info（宿主令牌表里没有 focus 那一档，app.asar 全数过）');
+  assert.ok(/border-radius:10px/.test(search), '外层没有圆角，那条焦点环就还是方的');
+  assert.equal(css.includes(':has('), false, '★ :has() 要 Chrome 105+，界面细节不许去赌宿主 Electron 的版本');
+  // ④ 在问期间那一态靠状态类：整条变软底、那一格变灰字，而不是靠 opacity 把半透明当禁用
+  assert.equal(off.includes('opacity'), false, '用 opacity 表达哑态 = 字还在原地只是淡了，那不是禁用那一形');
+  assert.ok(off.includes('var(--gt-soft)'), '在问期间整条要有底色变化（靠 .off 状态类，SearchCard 自己知道 asking）');
+  assert.ok(/\.gt-search\.off \.gt-q\{[^}]*var\(--gt-muted\)/.test(css), '在问期间那一格的字色没有跟着走');
+  // ⑤ placeholder 走令牌，不许塞字面量色值（⑬ 那三处成因之一：全文件压根没有 ::placeholder 这一条）
+  assert.ok(ph.includes('var(--gt-faint)'), 'placeholder 没走 --gt-faint');
+  assert.equal(/#[0-9a-fA-F]{3,8}/.test(ph), false, 'placeholder 里塞字面量色值 = 绕开 :root 那一层映射');
+  // ⑥ DOM 那一头：那条盒子是 .gt-bar 里唯一的孩子，input 与按钮都住在它里面
+  const V = searchViews();
+  const snap = { ...snapFixture(), search: V.idle };
+  const open = (asking) => {
+    const lc = loadClient(PAYLOAD, { states: ['rust', null, asking, ''] });
+    const tree = render(lc.exports.__test.components.SearchCard, { snap, onRepo() {}, onAsk() { return new Promise(() => {}); }, onFav() {} });
+    const bar = findByClass(tree, 'gt-bar')[0];
+    const box = findByClass(tree, 'gt-search')[0];
+    return { bar, box, q: findByClass(tree, 'gt-q')[0], go: findByClass(tree, 'gt-go')[0] };
+  };
+  const on = open(false);
+  assert.equal(kidsOf(on.bar, 'div').length, 1, '★ .gt-bar 里不止一个孩子 = 那一形又变回"一个框 + 旁边一个按钮"');
+  assert.equal(kidsOf(on.box, 'input')[0], on.q, '输入框没住在那条盒子里');
+  assert.equal(kidsOf(on.box, 'button')[0], on.go, '那枚按钮没住在那条盒子里');
+  assert.equal(on.box.props.className, 'gt-search', '没在问时不许多挂状态类');
+  assert.equal(on.q.props.className, 'gt-q', '★ 输入框把 .gt-input 又挂回来 = 那条 1px 边框跟着回来，两道边叠一起');
+  const off2 = open(true);
+  assert.equal(off2.box.props.className, 'gt-search off', '在问期间没挂 .off：CSS 那一档哑态在界面上就是空的');
 });
 
 await runAll('client');
